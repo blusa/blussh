@@ -273,6 +273,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				XROS_DEPLOYMENT_TARGET = 2.5;
+				INFOPLIST_KEY_LSUIElement = YES;
 			};
 			name = Debug;
 		};
@@ -310,6 +311,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				XROS_DEPLOYMENT_TARGET = 2.5;
+				INFOPLIST_KEY_LSUIElement = YES;
 			};
 			name = Release;
 		};
