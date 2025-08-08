@@ -164,7 +164,7 @@ class SSHService: ObservableObject {
         }
 
         connection.start(queue: .global())
-        _ = semaphore.wait(timeout: .now() + 2)
+        _ = semaphore.wait(timeout: .now() + 5)
         
         connection.cancel()
         
