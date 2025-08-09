@@ -25,7 +25,13 @@ struct StatusMenuView: View {
             ScrollView {
                 VStack(alignment: .leading) {
                     ForEach(Array(Dictionary(grouping: sshService.serverStatuses, by: { $0.group }).keys.sorted()), id: \.self) { group in
-                        Section(header: Text(group).font(.title2).padding(.top)) {
+                        Section(header:
+                                    Text(group)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .textCase(.uppercase)
+                                        .padding(.top, 8)
+                        ) {
                             ForEach(sshService.serverStatuses.filter { $0.group == group }) { server in
                                 HStack {
                                     Toggle("", isOn: Binding(
@@ -100,6 +106,7 @@ struct StatusMenuView: View {
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(sshService: sshService, isShowing: $showingSettings)
+                .frame(width: 340, height: 420)
         }
     }
 

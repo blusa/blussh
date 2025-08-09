@@ -27,81 +27,130 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section(header: Text("SSH Config Files")) {
-                List {
-                    ForEach(filePaths, id: \.self) { path in
-                        Text(path)
-                    }
-                    .onDelete(perform: removePath)
+        VStack(alignment: .leading, spacing: 20) {
+            // Back (hyperlink)
+            HStack {
+                Button(action: { isShowing = false }) {
+                    Text("Back")
                 }
-
-                HStack {
-                    TextField("Add new path", text: $newPath)
-                    Button("Add") {
-                        addPath()
-                    }
-                }
-                HStack {
-                    Spacer()
-                    Button("Select SSH Config File") {
-                        selectSSHConfigFile()
-                    }
-                }
+                .buttonStyle(.plain)
+                Spacer()
             }
-
-            Section(header: Text("Refresh Frequency")) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Refresh every: \(frequencies[Int(selectedFrequencyIndex)].label)")
-                        .font(.subheadline)
-
-                    Slider(value: $selectedFrequencyIndex, in: 0...Double(frequencies.count - 1), step: 1)
-                        .onChange(of: selectedFrequencyIndex) { oldValue, newValue in
-                            let newIndex = Int(newValue)
-                            let newFrequency = frequencies[newIndex].value
-                            UserDefaults.standard.set(newIndex, forKey: "selectedFrequencyIndex")
-                            sshService.updateTimer(frequency: newFrequency)
-                        }
-                }
-            }
-
-            if #available(macOS 13.0, *) {
-                Section(header: Text("General")) {
-                    Toggle("Launch at Login", isOn: $launchAtLogin)
-                        .onChange(of: launchAtLogin) { oldValue, newValue in
-                            Task {
-                                do {
-                                    if newValue {
-                                        try SMAppService.mainApp.register()
-                                    } else {
-                                        try SMAppService.mainApp.unregister()
+            // SSH Config Files
+            Text("SSH Config Files")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textCase(.uppercase)
+            VStack(alignment: .leading, spacing: 8) {
+                if filePaths.isEmpty {
+                    Text("No SSH config files added.")
+                        .foregroundColor(.secondary)
+                } else {
+                    List {
+                        ForEach(filePaths, id: \.self) { path in
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc.text")
+                                    .foregroundColor(.secondary)
+                                Text(path)
+                                    .font(.system(.body, design: .monospaced))
+                                Spacer()
+                                Button(role: .destructive) {
+                                    if let idx = filePaths.firstIndex(of: path) {
+                                        removePath(at: IndexSet(integer: idx))
                                     }
-                                } catch {
-                                    print("Failed to \(newValue ? "enable" : "disable") launch at login: \(error.localizedDescription)")
+                                } label: {
+                                    Image(systemName: "trash")
                                 }
+                                .buttonStyle(.borderless)
+                            }
+                            .padding(.vertical, 1)
+                        }
+                    }
+                    .environment(\.defaultMinListRowHeight, 26)
+                    .frame(height: min(160, CGFloat(filePaths.count) * 28 + 12))
+                    .listStyle(.inset)
+                }
+                // Search | Path | +
+                HStack(spacing: 8) {
+                    Button(action: selectSSHConfigFile) {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .help("Search for SSH config file…")
+                    .buttonStyle(.borderless)
+
+                    TextField("SSH config path", text: $newPath)
+
+                    Button(action: addPath) {
+                        Image(systemName: "plus")
+                    }
+                    .disabled(newPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            Divider()
+
+            // Refresh Frequency
+            Text("Refresh Frequency")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textCase(.uppercase)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Text("Refresh every:")
+                    Text(frequencies[Int(selectedFrequencyIndex)].label)
+                        .font(.subheadline)
+                        .foregroundColor(.accentColor)
+                }
+                Slider(value: $selectedFrequencyIndex, in: 0...Double(frequencies.count - 1), step: 1)
+                    .onChange(of: selectedFrequencyIndex) { oldValue, newValue in
+                        let newIndex = Int(newValue)
+                        let newFrequency = frequencies[newIndex].value
+                        UserDefaults.standard.set(newIndex, forKey: "selectedFrequencyIndex")
+                        sshService.updateTimer(frequency: newFrequency)
+                    }
+            }
+
+            Divider()
+
+            // General
+            if #available(macOS 13.0, *) {
+                Text("General")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .textCase(.uppercase)
+                Toggle("Launch at Login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { oldValue, newValue in
+                        Task {
+                            do {
+                                if newValue {
+                                    try SMAppService.mainApp.register()
+                                } else {
+                                    try SMAppService.mainApp.unregister()
+                                }
+                            } catch {
+                                print("Failed to perform task launch at login")
                             }
                         }
-                        .onAppear {
-                                launchAtLogin = SMAppService.mainApp.status == .enabled
-                        }
-                }
+                    }
+                    .onAppear {
+                        launchAtLogin = SMAppService.mainApp.status == .enabled
+                    }
             }
+
+            Spacer(minLength: 0)
         }
-        .frame(minWidth: 300, minHeight: 350) // Increased size
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done") {
-                    isShowing = false
-                }
-            }
-        }
+        .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+        // No explicit min frame so the presenting sheet controls size
     }
 
     private func addPath() {
-        guard !newPath.isEmpty else { return }
-        filePaths.append(newPath)
+        let trimmed = newPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        filePaths.append(trimmed)
         UserDefaults.standard.set(filePaths, forKey: "sshConfigFilePaths")
         newPath = ""
+        sshService.checkServers()
     }
 
     private func removePath(at offsets: IndexSet) {
@@ -116,18 +165,14 @@ struct SettingsView: View {
         openPanel.canChooseFiles = true
         
 
-        openPanel.begin { (result) -> Void in
+    openPanel.begin { (result) -> Void in
             if result == .OK {
                 if let url = openPanel.url {
                     do {
                         let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
                         UserDefaults.standard.set(bookmarkData, forKey: "sshConfigBookmark")
-                        // Optionally, add the path to the displayed list if desired
-                        if !filePaths.contains(url.path) {
-                            filePaths.append(url.path)
-                            UserDefaults.standard.set(filePaths, forKey: "sshConfigFilePaths")
-                        }
-                        sshService.checkServers() // Re-check servers after selecting new config
+            // Fill the text field; user confirms by pressing +
+            newPath = url.path
                     } catch {
                         print("Failed to create bookmark: \(error)")
                     }
