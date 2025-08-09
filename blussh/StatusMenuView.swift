@@ -115,9 +115,11 @@ struct StatusMenuView: View {
         case .allOnline:
             return .green
         case .someOnline:
-            return .yellow
+            return .orange
         case .allOffline:
             return .red
+        case .notInitialized:
+            return .gray
         }
     }
 

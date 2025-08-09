@@ -5,6 +5,7 @@ enum GlobalStatus {
     case allOnline
     case someOnline
     case allOffline
+    case notInitialized
 }
 
 struct SSHServer: Identifiable {
@@ -21,7 +22,8 @@ struct SSHServer: Identifiable {
 class SSHService: ObservableObject {
     @Published var serverStatuses: [SSHServer] = []
     @Published var lastUpdated: Date? = nil
-    @Published var globalStatus: GlobalStatus = .allOnline
+    @Published var globalStatus: GlobalStatus = .notInitialized
+
     var timer: Timer?
 
     func updateTimer(frequency: TimeInterval) {

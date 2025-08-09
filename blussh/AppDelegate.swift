@@ -54,12 +54,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func updateStatusIcon() {
         let color: NSColor
         switch sshService.globalStatus {
-        case .allOnline:
-            color = .systemGreen
-        case .someOnline:
-            color = .systemYellow
-        case .allOffline:
-            color = .systemRed
+            case .allOnline:
+                color = .systemGreen
+            case .someOnline:
+                color = .systemOrange
+            case .allOffline:
+                color = .systemRed
+            case .notInitialized:
+                color = .systemGray
         }
         let title = NSMutableAttributedString(string: "BluSSH ")
         let dot = NSAttributedString(string: "●", attributes: [.foregroundColor: color])
