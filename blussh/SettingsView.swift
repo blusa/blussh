@@ -163,16 +163,18 @@ struct SettingsView: View {
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = false
         openPanel.canChooseFiles = true
-        
+        openPanel.resolvesAliases = true // Important for resolving symlinks
 
-    openPanel.begin { (result) -> Void in
+        openPanel.begin { (result) -> Void in
             if result == .OK {
                 if let url = openPanel.url {
                     do {
-                        let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+                        // Resolve symlinks before creating the bookmark
+                        let resolvedUrl = url.resolvingSymlinksInPath()
+                        let bookmarkData = try resolvedUrl.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
                         UserDefaults.standard.set(bookmarkData, forKey: "sshConfigBookmark")
-            // Fill the text field; user confirms by pressing +
-            newPath = url.path
+                        // Fill the text field; user confirms by pressing +
+                        newPath = resolvedUrl.path
                     } catch {
                         print("Failed to create bookmark: \(error)")
                     }

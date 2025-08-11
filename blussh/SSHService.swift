@@ -43,15 +43,16 @@ class SSHService: ObservableObject {
                 var isStale = false
                 do {
                     let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+                    let resolvedUrl = url.resolvingSymlinksInPath()
                     if isStale {
                         // Bookmark is stale, try to create a new one
-                        let newBookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+                        let newBookmarkData = try resolvedUrl.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
                         UserDefaults.standard.set(newBookmarkData, forKey: "sshConfigBookmark")
                     }
 
-                    if url.startAccessingSecurityScopedResource() {
+                    if resolvedUrl.startAccessingSecurityScopedResource() {
                         do {
-                            let configContents = try String(contentsOf: url, encoding: .utf8)
+                            let configContents = try String(contentsOf: resolvedUrl, encoding: .utf8)
                             let lines = configContents.components(separatedBy: .newlines)
                             
                             var servers: [SSHServer] = []
@@ -87,7 +88,7 @@ class SSHService: ObservableObject {
                         } catch {
                             print("Error reading SSH config file: \(error)")
                         }
-                        url.stopAccessingSecurityScopedResource()
+                        resolvedUrl.stopAccessingSecurityScopedResource()
                     } else {
                         print("Could not start accessing security scoped resource.")
                     }
