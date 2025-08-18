@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__archon__manage_project",
+      "mcp__archon__manage_task",
+      "Bash(xcodebuild:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
