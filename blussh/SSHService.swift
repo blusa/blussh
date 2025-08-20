@@ -111,7 +111,7 @@ class SSHService: ObservableObject {
                     if mutableServer.isEnabled {
                         mutableServer.isOnline = self.checkServer(host: server.hostName, port: server.port)
                     }
-                    mutableServer.group = self.extractGroup(from: server.hostName)
+                    mutableServer.group = self.extractGroup(from: server.host)
                     return mutableServer
                 }
             }

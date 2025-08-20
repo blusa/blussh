@@ -3,7 +3,8 @@
     "allow": [
       "mcp__archon__manage_project",
       "mcp__archon__manage_task",
-      "Bash(xcodebuild:*)"
+      "Bash(xcodebuild:*)",
+      "Bash(open /Users/blusa/Library/Developer/Xcode/DerivedData/blussh-aylzdkddlotbpdetvxhphoqivejr/Build/Products/Debug/blussh.app)"
     ],
     "deny": [],
     "ask": []

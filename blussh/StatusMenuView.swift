@@ -4,6 +4,8 @@ struct StatusMenuView: View {
     @ObservedObject var sshService: SSHService
     @State private var lastUpdatedString: String = ""
     @State private var showingSettings = false
+    @State private var hoveredServerId: UUID? = nil
+    @State private var copiedServerId: UUID? = nil
 
     let updateTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -55,6 +57,30 @@ struct StatusMenuView: View {
                                     Circle()
                                         .frame(width: 10, height: 10)
                                         .foregroundColor(server.isOnline ? .green : .red)
+                                }
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(backgroundColorForServer(server))
+                                        .padding(.horizontal, -6)
+                                        .padding(.vertical, -4)
+                                )
+                                .onHover { isHovering in
+                                    hoveredServerId = isHovering ? server.id : nil
+                                    if isHovering {
+                                        NSCursor.pointingHand.set()
+                                    } else {
+                                        NSCursor.arrow.set()
+                                    }
+                                }
+                                .onTapGesture {
+                                    copySSHCommand(for: server)
+                                    
+                                    copiedServerId = server.id
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                        copiedServerId = nil
+                                    }
                                 }
                             }
                         }
@@ -142,6 +168,28 @@ struct StatusMenuView: View {
         } else {
             lastUpdatedString = "Not refreshed yet"
         }
+    }
+    
+    private func backgroundColorForServer(_ server: SSHServer) -> Color {
+        if copiedServerId == server.id {
+            return Color.green.opacity(0.2)
+        } else if hoveredServerId == server.id {
+            return Color.blue.opacity(0.1)
+        } else {
+            return Color.clear
+        }
+    }
+    
+    private func copySSHCommand(for server: SSHServer) {
+        let sshCommand: String
+        if let user = server.user {
+            sshCommand = "ssh \(user)@\(server.host)"
+        } else {
+            sshCommand = "ssh \(server.host)"
+        }
+        
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(sshCommand, forType: .string)
     }
 }
 
