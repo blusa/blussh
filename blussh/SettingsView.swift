@@ -2,16 +2,20 @@ import SwiftUI
 import ServiceManagement
 import AppKit
 
-@available(macOS 12.0, *)
-
 struct SettingsView: View {
-    
-    @ObservedObject var sshService: SSHService
+
+    @ObservedObject var engine: MonitoringEngine
     @Binding var isShowing: Bool
     @State private var newPath: String = ""
     @State private var filePaths: [String] = UserDefaults.standard.stringArray(forKey: "sshConfigFilePaths") ?? ["~/.ssh/config"]
     @State private var launchAtLogin: Bool = false
     @State private var selectedFrequencyIndex: Double
+
+    @State private var sshSourceEnabled = UserDefaults.standard.bool(forKey: "sshSourceEnabled", defaultValue: true)
+    @State private var tailscaleEnabled = UserDefaults.standard.bool(forKey: "tailscaleSourceEnabled", defaultValue: true)
+    @State private var zerotierEnabled = UserDefaults.standard.bool(forKey: "zerotierSourceEnabled", defaultValue: true)
+    @State private var notificationsEnabled = UserDefaults.standard.bool(forKey: "notificationsEnabled", defaultValue: true)
+    @State private var zerotierToken: String = KeychainHelper.read(account: "zerotier-central-token") ?? ""
 
     let frequencies: [(label: String, value: TimeInterval)] = [
         ("5s", 5),
@@ -20,107 +24,107 @@ struct SettingsView: View {
         ("5m", 300)
     ]
 
-    init(sshService: SSHService, isShowing: Binding<Bool>) {
-        self.sshService = sshService
+    init(engine: MonitoringEngine, isShowing: Binding<Bool>) {
+        self.engine = engine
         self._isShowing = isShowing
         self._selectedFrequencyIndex = State(initialValue: Double(UserDefaults.standard.integer(forKey: "selectedFrequencyIndex", defaultValue: 1)))
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Back (hyperlink)
-            HStack {
-                Button(action: { isShowing = false }) {
-                    Text("Back")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Button(action: { isShowing = false }) {
+                        Text("Back")
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
                 }
-                .buttonStyle(.plain)
-                Spacer()
-            }
-            // SSH Config Files
-            Text("SSH Config Files")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .textCase(.uppercase)
-            VStack(alignment: .leading, spacing: 8) {
-                if filePaths.isEmpty {
-                    Text("No SSH config files added.")
-                        .foregroundColor(.secondary)
-                } else {
-                    List {
-                        ForEach(filePaths, id: \.self) { path in
-                            HStack(spacing: 8) {
-                                Image(systemName: "doc.text")
-                                    .foregroundColor(.secondary)
-                                Text(path)
-                                    .font(.system(.body, design: .monospaced))
-                                Spacer()
-                                Button(role: .destructive) {
-                                    if let idx = filePaths.firstIndex(of: path) {
-                                        removePath(at: IndexSet(integer: idx))
-                                    }
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .buttonStyle(.borderless)
+
+                sectionTitle("Sources")
+
+                Toggle("SSH config files", isOn: $sshSourceEnabled)
+                    .onChange(of: sshSourceEnabled) { _, newValue in
+                        UserDefaults.standard.set(newValue, forKey: "sshSourceEnabled")
+                        engine.refresh()
+                    }
+                if sshSourceEnabled {
+                    sshConfigPathsView
+                        .padding(.leading, 20)
+                }
+
+                Toggle("Tailscale", isOn: $tailscaleEnabled)
+                    .onChange(of: tailscaleEnabled) { _, newValue in
+                        UserDefaults.standard.set(newValue, forKey: "tailscaleSourceEnabled")
+                        engine.refresh()
+                    }
+                if tailscaleEnabled {
+                    HStack(spacing: 6) {
+                        Image(systemName: TailscaleSource.resolveBinary() != nil ? "checkmark.circle" : "xmark.circle")
+                            .foregroundColor(TailscaleSource.resolveBinary() != nil ? .green : .red)
+                        Text(TailscaleSource.resolveBinary() ?? "tailscale binary not found")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .padding(.leading, 20)
+                }
+
+                Toggle("ZeroTier", isOn: $zerotierEnabled)
+                    .onChange(of: zerotierEnabled) { _, newValue in
+                        UserDefaults.standard.set(newValue, forKey: "zerotierSourceEnabled")
+                        engine.refresh()
+                    }
+                if zerotierEnabled {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Central API token (my.zerotier.com → Account)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        HStack {
+                            SecureField("API token", text: $zerotierToken)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save") {
+                                KeychainHelper.write(zerotierToken.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                     account: "zerotier-central-token")
+                                engine.refresh()
                             }
-                            .padding(.vertical, 1)
                         }
                     }
-                    .environment(\.defaultMinListRowHeight, 26)
-                    .frame(height: min(160, CGFloat(filePaths.count) * 28 + 12))
-                    .listStyle(.inset)
+                    .padding(.leading, 20)
                 }
-                // Search | Path | +
-                HStack(spacing: 8) {
-                    Button(action: selectSSHConfigFile) {
-                        Image(systemName: "magnifyingglass")
-                    }
-                    .help("Search for SSH config file…")
-                    .buttonStyle(.borderless)
 
-                    TextField("SSH config path", text: $newPath)
+                Divider()
 
-                    Button(action: addPath) {
-                        Image(systemName: "plus")
+                sectionTitle("Notifications")
+                Toggle("Notify when hosts go down or come back", isOn: $notificationsEnabled)
+                    .onChange(of: notificationsEnabled) { _, newValue in
+                        UserDefaults.standard.set(newValue, forKey: "notificationsEnabled")
                     }
-                    .disabled(newPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .buttonStyle(.borderless)
+
+                Divider()
+
+                sectionTitle("Refresh Frequency")
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Text("Refresh every:")
+                        Text(frequencies[Int(selectedFrequencyIndex)].label)
+                            .font(.subheadline)
+                            .foregroundColor(.accentColor)
+                    }
+                    Slider(value: $selectedFrequencyIndex, in: 0...Double(frequencies.count - 1), step: 1)
+                        .onChange(of: selectedFrequencyIndex) { _, newValue in
+                            let newIndex = Int(newValue)
+                            UserDefaults.standard.set(newIndex, forKey: "selectedFrequencyIndex")
+                            engine.updateTimer(frequency: frequencies[newIndex].value)
+                        }
                 }
-            }
 
-            Divider()
+                Divider()
 
-            // Refresh Frequency
-            Text("Refresh Frequency")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .textCase(.uppercase)
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Text("Refresh every:")
-                    Text(frequencies[Int(selectedFrequencyIndex)].label)
-                        .font(.subheadline)
-                        .foregroundColor(.accentColor)
-                }
-                Slider(value: $selectedFrequencyIndex, in: 0...Double(frequencies.count - 1), step: 1)
-                    .onChange(of: selectedFrequencyIndex) { oldValue, newValue in
-                        let newIndex = Int(newValue)
-                        let newFrequency = frequencies[newIndex].value
-                        UserDefaults.standard.set(newIndex, forKey: "selectedFrequencyIndex")
-                        sshService.updateTimer(frequency: newFrequency)
-                    }
-            }
-
-            Divider()
-
-            // General
-            if #available(macOS 13.0, *) {
-                Text("General")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .textCase(.uppercase)
+                sectionTitle("General")
                 Toggle("Launch at Login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { oldValue, newValue in
+                    .onChange(of: launchAtLogin) { _, newValue in
                         Task {
                             do {
                                 if newValue {
@@ -136,12 +140,60 @@ struct SettingsView: View {
                     .onAppear {
                         launchAtLogin = SMAppService.mainApp.status == .enabled
                     }
-            }
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
+            }
+            .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
         }
-        .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-        // No explicit min frame so the presenting sheet controls size
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .textCase(.uppercase)
+    }
+
+    private var sshConfigPathsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(filePaths, id: \.self) { path in
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.text")
+                        .foregroundColor(.secondary)
+                    Text(path)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button(role: .destructive) {
+                        if let idx = filePaths.firstIndex(of: path) {
+                            filePaths.remove(at: idx)
+                            UserDefaults.standard.set(filePaths, forKey: "sshConfigFilePaths")
+                            engine.refresh()
+                        }
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            HStack(spacing: 8) {
+                Button(action: selectSSHConfigFile) {
+                    Image(systemName: "magnifyingglass")
+                }
+                .help("Search for SSH config file…")
+                .buttonStyle(.borderless)
+
+                TextField("SSH config path", text: $newPath)
+                    .textFieldStyle(.roundedBorder)
+
+                Button(action: addPath) {
+                    Image(systemName: "plus")
+                }
+                .disabled(newPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .buttonStyle(.borderless)
+            }
+        }
     }
 
     private func addPath() {
@@ -150,12 +202,7 @@ struct SettingsView: View {
         filePaths.append(trimmed)
         UserDefaults.standard.set(filePaths, forKey: "sshConfigFilePaths")
         newPath = ""
-        sshService.checkServers()
-    }
-
-    private func removePath(at offsets: IndexSet) {
-        filePaths.remove(atOffsets: offsets)
-        UserDefaults.standard.set(filePaths, forKey: "sshConfigFilePaths")
+        engine.refresh()
     }
 
     private func selectSSHConfigFile() {
@@ -163,22 +210,13 @@ struct SettingsView: View {
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = false
         openPanel.canChooseFiles = true
-        openPanel.resolvesAliases = true // Important for resolving symlinks
+        openPanel.resolvesAliases = true
+        openPanel.showsHiddenFiles = true
+        openPanel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
 
-        openPanel.begin { (result) -> Void in
-            if result == .OK {
-                if let url = openPanel.url {
-                    do {
-                        // Resolve symlinks before creating the bookmark
-                        let resolvedUrl = url.resolvingSymlinksInPath()
-                        let bookmarkData = try resolvedUrl.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-                        UserDefaults.standard.set(bookmarkData, forKey: "sshConfigBookmark")
-                        // Fill the text field; user confirms by pressing +
-                        newPath = resolvedUrl.path
-                    } catch {
-                        print("Failed to create bookmark: \(error)")
-                    }
-                }
+        openPanel.begin { result in
+            if result == .OK, let url = openPanel.url {
+                newPath = url.resolvingSymlinksInPath().path
             }
         }
     }
@@ -186,7 +224,6 @@ struct SettingsView: View {
 
 struct SettingsView_Previews: PreviewProvider {
     static var previews: some View {
-        SettingsView(sshService: SSHService(), isShowing: .constant(false))
+        SettingsView(engine: MonitoringEngine(), isShowing: .constant(false))
     }
 }
-
