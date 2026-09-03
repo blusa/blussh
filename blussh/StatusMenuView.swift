@@ -6,11 +6,13 @@ struct StatusMenuView: View {
     @State private var showingSettings = false
     @State private var hoveredHostId: String? = nil
     @State private var copiedHostId: String? = nil
+    @AppStorage("hideDisabledHosts") private var hideDisabledHosts = false
 
     let updateTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var groups: [(origin: HostOrigin, hosts: [MonitoredHost])] {
-        Dictionary(grouping: engine.hosts, by: { $0.origin })
+        let visible = hideDisabledHosts ? engine.hosts.filter { $0.isEnabled || $0.isPlaceholder } : engine.hosts
+        return Dictionary(grouping: visible, by: { $0.origin })
             .sorted { $0.key.sortKey < $1.key.sortKey }
             .map { (origin: $0.key, hosts: $0.value) }
     }
@@ -74,6 +76,17 @@ struct StatusMenuView: View {
                 }
                 .buttonStyle(.borderless)
                 .frame(width: 24, height: 24)
+
+                Button {
+                    hideDisabledHosts.toggle()
+                } label: {
+                    Image(systemName: hideDisabledHosts ? "eye.slash" : "eye")
+                        .font(.system(size: 14))
+                        .foregroundColor(hideDisabledHosts ? .accentColor : .primary)
+                }
+                .buttonStyle(.borderless)
+                .frame(width: 24, height: 24)
+                .help(hideDisabledHosts ? "Show disabled hosts" : "Hide disabled hosts")
 
                 Text(lastUpdatedString)
                     .font(.caption)
