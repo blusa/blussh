@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-blussh is a native macOS menu bar application built with SwiftUI that monitors SSH server connectivity. It's a sandboxed app that parses SSH config files and provides real-time connection status updates.
+blussh is a native macOS menu bar application built with SwiftUI that monitors host connectivity. It discovers hosts from SSH config files, Tailscale, and ZeroTier, shows live status in a popover, and notifies when hosts go down or come back up.
 
 ## Development Commands
 
@@ -31,66 +31,50 @@ xcodebuild test -project blussh.xcodeproj -scheme blussh
 
 ## Architecture Overview
 
+Design spec: `docs/superpowers/specs/2026-09-02-vpn-discovery-design.md`
+
 ### Core Architecture Pattern
-The app follows MVVM with Combine for reactive state management:
+MVVM with Combine/async-await. Hosts come from pluggable sources; a central
+engine monitors them:
 
-1. **AppDelegate** (`blussh/AppDelegate.swift`): Bridges SwiftUI with AppKit, manages the NSStatusItem (menu bar icon), and coordinates between the SSHService and UI components.
+1. **AppDelegate** (`blussh/AppDelegate.swift`): Bridges SwiftUI with AppKit, manages the NSStatusItem (hostname + colored status dot).
 
-2. **SSHService** (`blussh/SSHService.swift`): The core business logic as an ObservableObject. Handles:
-   - SSH config file parsing with security-scoped bookmarks
-   - TCP connectivity testing using Network framework (5-second timeout)
-   - Background monitoring with configurable intervals
-   - Server state persistence in UserDefaults
+2. **MonitoringEngine** (`blussh/MonitoringEngine.swift`): ObservableObject running the cycle: discover from enabled sources concurrently → merge ssh-config entries into matching VPN hosts → auto-detect SSH servers (one-time port-22 probe, persisted) → concurrent TCP checks → debounce (2 consecutive readings to confirm a state flip) → notify → publish.
 
-3. **UI Layer**: SwiftUI views that observe SSHService:
-   - StatusMenuView: Main popover interface with server list
-   - SettingsView: Configuration for file paths and refresh intervals
+3. **Host sources** (`HostSource` protocol returning `DiscoveryResult`):
+   - `SSHConfigSource`: parses ssh config files (direct read, symlinks resolved for GNU Stow, wildcard Host patterns skipped)
+   - `TailscaleSource`: runs `tailscale status --json` (binary auto-detected, override via `tailscaleBinaryPath` default)
+   - `ZeroTierSource`: local API (`localhost:9993` + authtoken.secret) for joined networks, Central API for named members
+
+4. **UI Layer**: `StatusMenuView` (popover; hosts grouped by source with online counts, tap-to-copy ssh command, context menu with SSH-monitoring toggle), `SettingsView`, `NotificationManager` (UNUserNotificationCenter down/up notifications).
 
 ### Key Technical Decisions
 
-1. **File Access Strategy**: Uses security-scoped bookmarks to maintain file access across launches. Resolves symlinks before creating bookmarks (crucial for dotfiles managed with GNU Stow).
+1. **Not sandboxed** (removed 2026-09): required to exec the tailscale CLI and read ZeroTier's authtoken. Only remaining entitlement is `network.client`.
+2. **Liveness is two signals**: `netOnline` (what the VPN control plane reports) and `sshOnline` (TCP:22 check, 5 s timeout). `MonitoredHost.isOnline` combines them.
+3. **Stable host IDs** (`ssh:<host>`, `ts:<name>`, `zt:<nwid>:<nodeId>`) key persisted per-host state in UserDefaults: `hostEnabled/v2`, `hostIsSSH/v2`, `hostConfirmedState/v2`.
+4. **Cross-source merge**: ssh-config entries whose HostName matches a VPN host's IP/DNS alias merge into it, contributing user/port/alias so the copied command stays `ssh user@alias`.
+5. **ZeroTier Central token** lives in Keychain (`KeychainHelper`, service `cloud.blusa.blussh`, account `zerotier-central-token`).
 
-2. **Connection Testing**: Uses Network framework's TCP connectivity check rather than SSH authentication - faster and doesn't require credentials.
-
-3. **State Management**: 
-   - Global state in SSHService as @Published properties
-   - Per-server enabled states stored in UserDefaults
-   - Combine publishers for reactive updates to menu bar icon
-
-4. **Background Processing**: Network operations run on `DispatchQueue.global()` with UI updates dispatched to main queue.
-
-### Security & Sandboxing
-
-The app is fully sandboxed with minimal entitlements:
-- `com.apple.security.app-sandbox`: Required for Mac App Store
-- `com.apple.security.files.user-selected.read-write`: For SSH config file access
-- `com.apple.security.network.client`: For TCP connectivity testing
-
-### Important Implementation Notes
-
-1. **SSH Config Parsing**: Custom parser handles standard directives (Host, HostName, User, Port). Located in SSHService.parseSSHConfig().
-
-2. **Status Icon Logic**: AppDelegate.updateStatusItemIcon() determines icon color based on aggregate server status (green/orange/red/gray).
-
-3. **Refresh Timing**: Configurable intervals (5s, 10s, 1m, 5m) managed by Timer in SSHService.startMonitoring().
-
-4. **Launch at Login**: Uses ServiceManagement framework (SettingsView handles registration).
+### Testing without a test target
+`MonitoringEngine.merge` and `applyDebounce` are internal (not private) so they
+can be smoke-tested by compiling the sources with
+`swiftc -parse-as-library blussh/*.swift <harness>.swift` plus a small `@main`
+async harness (UI files excluded).
 
 ## Common Development Tasks
 
-### Adding New SSH Config Directives
-Modify `SSHService.parseSSHConfig()` to handle additional SSH config options.
+### Adding a new host source
+Implement `HostSource`, append it in `MonitoringEngine.runCycle()`, add an
+enable toggle in SettingsView (defaults key `<name>SourceEnabled`).
 
 ### Changing Connection Test Logic
-Update `SSHService.checkConnection()` - currently uses TCP port check with 5-second timeout.
+`MonitoringEngine.checkTCP(host:port:timeout:)` — TCP check, 5-second timeout.
 
 ### Adding UI Features
 - Menu bar items: Modify StatusMenuView
 - Settings: Extend SettingsView
 - Remember to update AppDelegate if menu bar icon behavior changes
-
-### Debugging Connection Issues
-Look for connection logs in `SSHService.checkConnection()` and timeout handling in the Network framework connection setup.
 
 ## Project Configuration
 

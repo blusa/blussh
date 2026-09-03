@@ -4,7 +4,7 @@ import Combine
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var popover: NSPopover!
-    var sshService = SSHService()
+    var engine = MonitoringEngine()
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -17,11 +17,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let popover = NSPopover()
         popover.contentSize = NSSize(width: 350, height: 350)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: StatusMenuView(sshService: sshService))
+        popover.contentViewController = NSHostingController(rootView: StatusMenuView(engine: engine))
         self.popover = popover
 
-        self.sshService.checkServers()
-        self.updateStatusIcon()
+        engine.start()
+        updateStatusIcon()
 
         let frequencies: [(label: String, value: TimeInterval)] = [
             ("5s", 5),
@@ -30,10 +30,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ("5m", 300)
         ]
         let frequencyIndex = UserDefaults.standard.integer(forKey: "selectedFrequencyIndex", defaultValue: 1)
-        let frequency = frequencies[frequencyIndex].value
-        self.sshService.updateTimer(frequency: frequency)
+        engine.updateTimer(frequency: frequencies[frequencyIndex].value)
 
-        sshService.$globalStatus
+        engine.$globalStatus
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.updateStatusIcon()
@@ -53,7 +52,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updateStatusIcon() {
         let color: NSColor
-        switch sshService.globalStatus {
+        switch engine.globalStatus {
             case .allOnline:
                 color = .systemGreen
             case .someOnline:
@@ -63,11 +62,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .notInitialized:
                 color = .systemGray
         }
-        let title = NSMutableAttributedString(string: "BluSSH ")
-        let dot = NSAttributedString(string: "●", attributes: [.foregroundColor: color])
+
+        let hostname = ProcessInfo.processInfo.hostName
+            .replacingOccurrences(of: ".local", with: "")
+            .uppercased()
+
+        let font = NSFont(name: "Monaco", size: 13) ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let title = NSMutableAttributedString(
+            string: "\(hostname) ",
+            attributes: [.font: font]
+        )
+        let dot = NSAttributedString(string: "●", attributes: [.foregroundColor: color, .font: font])
         title.append(dot)
 
+        let icon = NSImage(systemSymbolName: "pc", accessibilityDescription: "Computer")
+        icon?.isTemplate = true
+
+        statusItem.button?.image = icon
+        statusItem.button?.imagePosition = .imageLeft
         statusItem.button?.attributedTitle = title
-        statusItem.button?.image = nil
     }
 }

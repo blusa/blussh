@@ -1,16 +1,20 @@
 import SwiftUI
 
 struct StatusMenuView: View {
-    @ObservedObject var sshService: SSHService
+    @ObservedObject var engine: MonitoringEngine
     @State private var lastUpdatedString: String = ""
     @State private var showingSettings = false
-    @State private var hoveredServerId: UUID? = nil
-    @State private var copiedServerId: UUID? = nil
+    @State private var hoveredHostId: String? = nil
+    @State private var copiedHostId: String? = nil
+    @AppStorage("hideDisabledHosts") private var hideDisabledHosts = false
 
     let updateTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    init(sshService: SSHService) {
-        self.sshService = sshService
+    private var groups: [(origin: HostOrigin, hosts: [MonitoredHost])] {
+        let visible = hideDisabledHosts ? engine.hosts.filter { $0.isEnabled || $0.isPlaceholder } : engine.hosts
+        return Dictionary(grouping: visible, by: { $0.origin })
+            .sorted { $0.key.sortKey < $1.key.sortKey }
+            .map { (origin: $0.key, hosts: $0.value) }
     }
 
     var body: some View {
@@ -19,69 +23,23 @@ struct StatusMenuView: View {
                 Text("BluSSH")
                     .font(.headline)
                 Spacer()
+                Text(onlineSummary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Circle()
                     .frame(width: 10, height: 10)
-                    .foregroundColor(statusColor(for: sshService.globalStatus))
+                    .foregroundColor(statusColor(for: engine.globalStatus))
             }
 
             ScrollView {
-                VStack(alignment: .leading) {
-                    ForEach(Array(Dictionary(grouping: sshService.serverStatuses, by: { $0.group }).keys.sorted()), id: \.self) { group in
-                        Section(header:
-                                    Text(group)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                        .textCase(.uppercase)
-                                        .padding(.top, 8)
-                        ) {
-                            ForEach(sshService.serverStatuses.filter { $0.group == group }) { server in
-                                HStack {
-                                    Toggle("", isOn: Binding(
-                                        get: { server.isEnabled },
-                                        set: { newValue in
-                                            if let index = sshService.serverStatuses.firstIndex(where: { $0.id == server.id }) {
-                                                sshService.serverStatuses[index].isEnabled = newValue
-                                                var enabledDict = UserDefaults.standard.dictionary(forKey: "enabledHosts") as? [String: Bool] ?? [:]
-                                                enabledDict[server.host] = newValue
-                                                UserDefaults.standard.set(enabledDict, forKey: "enabledHosts")
-                                            }
-                                        }
-                                    ))
-                                    VStack(alignment: .leading) {
-                                        Text(server.host).font(.headline)
-                                        Text(subtitle(for: server))
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    Circle()
-                                        .frame(width: 10, height: 10)
-                                        .foregroundColor(server.isOnline ? .green : .red)
-                                }
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 2)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(backgroundColorForServer(server))
-                                        .padding(.horizontal, -6)
-                                        .padding(.vertical, -4)
-                                )
-                                .onHover { isHovering in
-                                    hoveredServerId = isHovering ? server.id : nil
-                                    if isHovering {
-                                        NSCursor.pointingHand.set()
-                                    } else {
-                                        NSCursor.arrow.set()
-                                    }
-                                }
-                                .onTapGesture {
-                                    copySSHCommand(for: server)
-                                    
-                                    copiedServerId = server.id
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                                        copiedServerId = nil
-                                    }
-                                }
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(groups, id: \.origin) { group in
+                        groupHeader(group)
+                        ForEach(group.hosts) { host in
+                            if host.isPlaceholder {
+                                placeholderRow(host)
+                            } else {
+                                hostRow(host)
                             }
                         }
                     }
@@ -89,11 +47,20 @@ struct StatusMenuView: View {
             }
             .frame(maxHeight: 800)
 
+            if !engine.sourceErrors.isEmpty {
+                ForEach(engine.sourceErrors) { error in
+                    Label("\(error.id): \(error.message)", systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                        .lineLimit(2)
+                }
+            }
+
             Divider()
 
             HStack {
                 Button {
-                    sshService.checkServers()
+                    engine.refresh()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 14))
@@ -110,6 +77,17 @@ struct StatusMenuView: View {
                 .buttonStyle(.borderless)
                 .frame(width: 24, height: 24)
 
+                Button {
+                    hideDisabledHosts.toggle()
+                } label: {
+                    Image(systemName: hideDisabledHosts ? "eye.slash" : "eye")
+                        .font(.system(size: 14))
+                        .foregroundColor(hideDisabledHosts ? .accentColor : .primary)
+                }
+                .buttonStyle(.borderless)
+                .frame(width: 24, height: 24)
+                .help(hideDisabledHosts ? "Show disabled hosts" : "Hide disabled hosts")
+
                 Text(lastUpdatedString)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -123,7 +101,7 @@ struct StatusMenuView: View {
             }
         }
         .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-        .frame(width: 320)
+        .frame(width: 340)
         .onReceive(updateTimer) { _ in
             updateLastUpdatedString()
         }
@@ -131,65 +109,168 @@ struct StatusMenuView: View {
             updateLastUpdatedString()
         }
         .sheet(isPresented: $showingSettings) {
-            SettingsView(sshService: sshService, isShowing: $showingSettings)
-                .frame(width: 340, height: 420)
+            SettingsView(engine: engine, isShowing: $showingSettings)
+                .frame(width: 360, height: 520)
         }
+    }
+
+    // MARK: - Rows
+
+    private func groupHeader(_ group: (origin: HostOrigin, hosts: [MonitoredHost])) -> some View {
+        let real = group.hosts.filter { !$0.isPlaceholder && $0.isEnabled }
+        let online = real.filter { $0.isOnline }.count
+        return HStack {
+            Text(group.origin.groupTitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textCase(.uppercase)
+            Spacer()
+            if !real.isEmpty {
+                Text("\(online)/\(real.count)")
+                    .font(.caption2)
+                    .foregroundColor(online == real.count ? .secondary : .orange)
+            }
+        }
+        .padding(.top, 10)
+        .padding(.bottom, 2)
+    }
+
+    private func placeholderRow(_ host: MonitoredHost) -> some View {
+        Text(host.name)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .italic()
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+    }
+
+    private func hostRow(_ host: MonitoredHost) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(
+                get: { host.isEnabled },
+                set: { engine.setEnabled($0, hostId: host.id) }
+            ))
+            .labelsHidden()
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(host.name).font(.headline)
+                Text(subtitle(for: host))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            if host.isSSHServer {
+                Text("ssh")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(sshBadgeColor(host).opacity(0.2)))
+                    .foregroundColor(sshBadgeColor(host))
+            }
+
+            Circle()
+                .frame(width: 10, height: 10)
+                .foregroundColor(dotColor(host))
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(backgroundColor(host))
+                .padding(.horizontal, -6)
+                .padding(.vertical, -2)
+        )
+        .contentShape(Rectangle())
+        .onHover { isHovering in
+            hoveredHostId = isHovering ? host.id : nil
+            if isHovering {
+                NSCursor.pointingHand.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
+        .onTapGesture {
+            copyToClipboard(host.sshCommand)
+            copiedHostId = host.id
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                copiedHostId = nil
+            }
+        }
+        .contextMenu {
+            Button("Copy ssh command") { copyToClipboard(host.sshCommand) }
+            Button("Copy address") { copyToClipboard(host.address) }
+            Toggle("Monitor SSH port", isOn: Binding(
+                get: { host.isSSHServer },
+                set: { engine.setIsSSHServer($0, hostId: host.id) }
+            ))
+        }
+    }
+
+    // MARK: - Helpers
+
+    private var onlineSummary: String {
+        let enabled = engine.hosts.filter { $0.isEnabled && !$0.isPlaceholder }
+        guard !enabled.isEmpty else { return "" }
+        return "\(enabled.filter { $0.isOnline }.count)/\(enabled.count) online"
+    }
+
+    private func subtitle(for host: MonitoredHost) -> String {
+        if let user = host.user {
+            return "\(user)@\(host.address)"
+        }
+        return host.address
+    }
+
+    private func dotColor(_ host: MonitoredHost) -> Color {
+        guard host.isEnabled else { return .gray }
+        if host.isOnline { return .green }
+        // Net up but ssh down is a distinct, more curious failure
+        if host.netOnline == true && host.sshOnline == false { return .orange }
+        return .red
+    }
+
+    private func sshBadgeColor(_ host: MonitoredHost) -> Color {
+        guard host.isEnabled else { return .gray }
+        switch host.sshOnline {
+        case .some(true): return .green
+        case .some(false): return .red
+        case .none: return .gray
+        }
+    }
+
+    private func backgroundColor(_ host: MonitoredHost) -> Color {
+        if copiedHostId == host.id {
+            return Color.green.opacity(0.2)
+        } else if hoveredHostId == host.id {
+            return Color.blue.opacity(0.1)
+        }
+        return Color.clear
     }
 
     private func statusColor(for status: GlobalStatus) -> Color {
         switch status {
-        case .allOnline:
-            return .green
-        case .someOnline:
-            return .orange
-        case .allOffline:
-            return .red
-        case .notInitialized:
-            return .gray
-        }
-    }
-
-    private func subtitle(for server: SSHServer) -> String {
-        if let user = server.user {
-            return "\(user)@\(server.hostName)"
-        } else {
-            return server.hostName
+        case .allOnline: return .green
+        case .someOnline: return .orange
+        case .allOffline: return .red
+        case .notInitialized: return .gray
         }
     }
 
     private func updateLastUpdatedString() {
-        if let lastUpdated = sshService.lastUpdated {
+        if let lastUpdated = engine.lastUpdated {
             let interval = Date().timeIntervalSince(lastUpdated)
-            if interval < 2 {
-                lastUpdatedString = "Refreshed just now"
-            } else {
-                lastUpdatedString = "Refreshed \(Int(interval))s. ago"
-            }
+            lastUpdatedString = interval < 2 ? "Refreshed just now" : "Refreshed \(Int(interval))s. ago"
         } else {
             lastUpdatedString = "Not refreshed yet"
         }
     }
-    
-    private func backgroundColorForServer(_ server: SSHServer) -> Color {
-        if copiedServerId == server.id {
-            return Color.green.opacity(0.2)
-        } else if hoveredServerId == server.id {
-            return Color.blue.opacity(0.1)
-        } else {
-            return Color.clear
-        }
-    }
-    
-    private func copySSHCommand(for server: SSHServer) {
-        let sshCommand: String
-        if let user = server.user {
-            sshCommand = "ssh \(user)@\(server.host)"
-        } else {
-            sshCommand = "ssh \(server.host)"
-        }
-        
+
+    private func copyToClipboard(_ string: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(sshCommand, forType: .string)
+        NSPasteboard.general.setString(string, forType: .string)
     }
 }
 
@@ -199,5 +280,12 @@ extension UserDefaults {
             return defaultValue
         }
         return integer(forKey: defaultName)
+    }
+
+    func bool(forKey defaultName: String, defaultValue: Bool) -> Bool {
+        if object(forKey: defaultName) == nil {
+            return defaultValue
+        }
+        return bool(forKey: defaultName)
     }
 }
