@@ -92,11 +92,33 @@ struct ZeroTierSource: HostSource {
         return address
     }
 
+    /// Central accepts `token <t>` for classic API tokens and `Bearer <t>` for newer ones;
+    /// try both before giving up.
+    static func centralGet(path: String, token: String) async throws -> Data {
+        let url = "https://api.zerotier.com/api/v1\(path)"
+        do {
+            return try await Self.request(url: url, headers: ["Authorization": "token \(token)"])
+        } catch {
+            return try await Self.request(url: url, headers: ["Authorization": "Bearer \(token)"])
+        }
+    }
+
+    /// Returns nil if the token works, or a human-readable problem description.
+    static func validateCentralToken(_ token: String) async -> String? {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "no token set" }
+        if trimmed.count < 24 { return "token looks too short (\(trimmed.count) chars) — paste the full API token" }
+        do {
+            _ = try await centralGet(path: "/network", token: trimmed)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     private func members(of network: (id: String, name: String, ok: Bool),
                          centralToken: String, excluding selfNodeId: String) async throws -> [MonitoredHost] {
-        let data = try await get(
-            url: "https://api.zerotier.com/api/v1/network/\(network.id)/member",
-            headers: ["Authorization": "token \(centralToken)"])
+        let data = try await Self.centralGet(path: "/network/\(network.id)/member", token: centralToken)
         guard let members = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
             throw simpleError("unexpected member list response")
         }
@@ -133,16 +155,29 @@ struct ZeroTierSource: HostSource {
     }
 
     private func get(url: String, headers: [String: String]) async throws -> Data {
+        try await Self.request(url: url, headers: headers)
+    }
+
+    private static func request(url: String, headers: [String: String]) async throws -> Data {
         var request = URLRequest(url: URL(string: url)!, timeoutInterval: 10)
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw simpleError("HTTP \(http.statusCode)")
+            let hint: String
+            switch http.statusCode {
+            case 401, 403: hint = " — invalid Central API token"
+            default: hint = ""
+            }
+            throw simpleError("HTTP \(http.statusCode)\(hint)")
         }
         return data
     }
 
-    private func simpleError(_ message: String) -> Error {
+    private static func simpleError(_ message: String) -> Error {
         NSError(domain: "blussh.zerotier", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private func simpleError(_ message: String) -> Error {
+        Self.simpleError(message)
     }
 }

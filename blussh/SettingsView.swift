@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var zerotierEnabled = UserDefaults.standard.bool(forKey: "zerotierSourceEnabled", defaultValue: true)
     @State private var notificationsEnabled = UserDefaults.standard.bool(forKey: "notificationsEnabled", defaultValue: true)
     @State private var zerotierToken: String = KeychainHelper.read(account: "zerotier-central-token") ?? ""
+    @State private var zerotierTokenStatus: String? = nil
 
     let frequencies: [(label: String, value: TimeInterval)] = [
         ("5s", 5),
@@ -85,10 +86,22 @@ struct SettingsView: View {
                             SecureField("API token", text: $zerotierToken)
                                 .textFieldStyle(.roundedBorder)
                             Button("Save") {
-                                KeychainHelper.write(zerotierToken.trimmingCharacters(in: .whitespacesAndNewlines),
-                                                     account: "zerotier-central-token")
-                                engine.refresh()
+                                let trimmed = zerotierToken.trimmingCharacters(in: .whitespacesAndNewlines)
+                                KeychainHelper.write(trimmed, account: "zerotier-central-token")
+                                zerotierTokenStatus = "Testing…"
+                                Task {
+                                    let problem = await ZeroTierSource.validateCentralToken(trimmed)
+                                    await MainActor.run {
+                                        zerotierTokenStatus = problem.map { "✗ \($0)" } ?? "✓ token works"
+                                        if problem == nil { engine.refresh() }
+                                    }
+                                }
                             }
+                        }
+                        if let status = zerotierTokenStatus {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundColor(status.hasPrefix("✓") ? .green : .red)
                         }
                     }
                     .padding(.leading, 20)
