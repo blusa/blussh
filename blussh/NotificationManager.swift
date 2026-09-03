@@ -5,8 +5,9 @@ final class NotificationManager {
     private var authorized = false
 
     func requestPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             self.authorized = granted
+            NSLog("blussh notifications: granted=\(granted) error=\(error?.localizedDescription ?? "none")")
         }
     }
 
