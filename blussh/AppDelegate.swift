@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import ServiceManagement
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
@@ -8,6 +9,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        // Replacing the bundle in /Applications silently invalidates the BTM login item;
+        // re-register whenever the user wants launch-at-login but the system lost it.
+        if UserDefaults.standard.bool(forKey: "launchAtLoginDesired"),
+           SMAppService.mainApp.status != .enabled {
+            do {
+                try SMAppService.mainApp.register()
+                NSLog("blussh: re-registered launch at login (status was lost)")
+            } catch {
+                NSLog("blussh: launch-at-login re-registration failed: \(error.localizedDescription)")
+            }
+        }
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {

@@ -138,6 +138,7 @@ struct SettingsView: View {
                 sectionTitle("General")
                 Toggle("Launch at Login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, newValue in
+                        UserDefaults.standard.set(newValue, forKey: "launchAtLoginDesired")
                         Task {
                             do {
                                 if newValue {
