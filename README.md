@@ -28,6 +28,16 @@ back up.
 - Groups with online counters, per-host enable toggles, hide-disabled switch,
   tap to copy the ssh command, aggregate status dot in the menu bar.
 
+## Install
+
+```bash
+brew install blusa/tap/blussh
+xattr -dr com.apple.quarantine /Applications/blussh.app  # not notarized
+```
+
+Releases: `scripts/release.sh <version>` builds, publishes the GitHub
+release, and updates the cask in [blusa/homebrew-tap](https://github.com/blusa/homebrew-tap).
+
 ## Build
 
 ```bash

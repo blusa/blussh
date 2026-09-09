@@ -54,14 +54,12 @@ cask "blussh" do
   desc "Menu bar app that monitors host connectivity across SSH config, Tailscale, and ZeroTier"
   homepage "https://github.com/${REPO}"
 
-  depends_on macos: ">= :sequoia"
+  depends_on macos: :sequoia
 
   app "blussh.app"
 
   caveats <<~EOS
-    blussh is not notarized. Install with:
-      brew install --no-quarantine blusa/tap/blussh
-    or clear the quarantine flag after install:
+    blussh is not notarized. Clear the quarantine flag after install:
       xattr -dr com.apple.quarantine /Applications/blussh.app
   EOS
 
