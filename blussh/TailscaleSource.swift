@@ -31,6 +31,11 @@ struct TailscaleSource: HostSource {
 
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let peers = root["Peer"] as? [String: [String: Any]] else {
+            // The GUI binary reports some failures as plain text on stdout with exit 0
+            if let text = String(data: data.prefix(200), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty, !text.hasPrefix("{") {
+                return DiscoveryResult(error: SourceError(id: name, message: text))
+            }
             return DiscoveryResult(error: SourceError(id: name, message: "unexpected status --json output"))
         }
 
@@ -67,6 +72,10 @@ struct TailscaleSource: HostSource {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: path)
             process.arguments = arguments
+            // The Tailscale.app binary doubles as GUI and CLI; it only behaves as a CLI
+            // when SHLVL is present, which GUI-launched apps (Finder/launchd) lack.
+            process.environment = ProcessInfo.processInfo.environment
+                .merging(["SHLVL": "1"]) { _, new in new }
             let stdout = Pipe()
             process.standardOutput = stdout
             process.standardError = Pipe()

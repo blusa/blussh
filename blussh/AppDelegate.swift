@@ -77,7 +77,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let hostname = ProcessInfo.processInfo.hostName
-            .replacingOccurrences(of: ".local", with: "")
+            .components(separatedBy: ".")[0]
             .uppercased()
 
         let font = NSFont(name: "Monaco", size: 13) ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
