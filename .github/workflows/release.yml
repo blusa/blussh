@@ -13,6 +13,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Import signing certificate
+        env:
+          SIGNING_CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
+          SIGNING_CERT_P12_PASSWORD: ${{ secrets.SIGNING_CERT_P12_PASSWORD }}
+        run: |
+          # Self-signed "blussh CI" identity: gives every release the same
+          # stable code signature so Keychain "Always Allow" grants survive
+          # updates (an ad-hoc signature changes per build and re-prompts).
+          KC="$RUNNER_TEMP/ci.keychain-db"
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p ci "$KC"
+          printf '%s' "$SIGNING_CERT_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" \
+            -P "$SIGNING_CERT_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" login.keychain-db
+          # A self-signed cert is only a usable identity once trusted
+          openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -clcerts -nokeys \
+            -passin "pass:$SIGNING_CERT_P12_PASSWORD" -out "$RUNNER_TEMP/cert.pem"
+          sudo security add-trusted-cert -d -r trustRoot \
+            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
+          security find-identity -v -p codesigning "$KC"
+
       - name: Build
         run: |
           xcodebuild -project blussh.xcodeproj -scheme blussh \
@@ -21,8 +45,9 @@ jobs:
           BUILT=$(xcodebuild -project blussh.xcodeproj -scheme blussh \
             -configuration Release -showBuildSettings 2>/dev/null \
             | awk '/ BUILT_PRODUCTS_DIR/{print $3}')
-          # CI has no signing identity; ad-hoc sign (required on Apple Silicon)
-          codesign --force --deep -s - "${BUILT}/blussh.app"
+          codesign --force --deep --keychain "$RUNNER_TEMP/ci.keychain-db" \
+            -s "blussh CI" "${BUILT}/blussh.app"
+          codesign -d -r- "${BUILT}/blussh.app"
           ditto -c -k --keepParent "${BUILT}/blussh.app" "blussh-${GITHUB_REF_NAME}.zip"
 
       - name: Create GitHub release

@@ -45,8 +45,10 @@ The script bumps `MARKETING_VERSION` (committing if needed) and pushes the
 `v1.0.1` tag. Pushing any `v*` tag triggers the
 [Release action](.github/workflows/release.yml), which:
 
-1. builds the app on a macOS runner (ad-hoc signed — CI has no signing
-   identity, and the app is distributed un-notarized anyway),
+1. builds the app on a macOS runner and signs it with the self-signed
+   "blussh CI" certificate (secrets `SIGNING_CERT_P12` /
+   `SIGNING_CERT_P12_PASSWORD`) — a stable identity so Keychain
+   "Always Allow" grants survive updates,
 2. publishes `blussh-v<version>.zip` as a GitHub release with generated notes,
 3. regenerates `Casks/blussh.rb` (template: `scripts/make-cask.sh`) and pushes
    it to [blusa/homebrew-tap](https://github.com/blusa/homebrew-tap).
