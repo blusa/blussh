@@ -35,8 +35,24 @@ brew install blusa/tap/blussh
 xattr -dr com.apple.quarantine /Applications/blussh.app  # not notarized
 ```
 
-Releases: `scripts/release.sh <version>` builds, publishes the GitHub
-release, and updates the cask in [blusa/homebrew-tap](https://github.com/blusa/homebrew-tap).
+## Release
+
+```bash
+scripts/release.sh 1.0.1
+```
+
+The script bumps `MARKETING_VERSION` (committing if needed) and pushes the
+`v1.0.1` tag. Pushing any `v*` tag triggers the
+[Release action](.github/workflows/release.yml), which:
+
+1. builds the app on a macOS runner (ad-hoc signed — CI has no signing
+   identity, and the app is distributed un-notarized anyway),
+2. publishes `blussh-v<version>.zip` as a GitHub release with generated notes,
+3. regenerates `Casks/blussh.rb` (template: `scripts/make-cask.sh`) and pushes
+   it to [blusa/homebrew-tap](https://github.com/blusa/homebrew-tap).
+
+Cross-repo push uses a write deploy key on the tap, stored as the
+`TAP_DEPLOY_KEY` secret in this repo. Watch a run with `gh run watch`.
 
 ## Build
 

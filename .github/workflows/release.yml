@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          xcodebuild -project blussh.xcodeproj -scheme blussh \
+            -configuration Release build -quiet \
+            CODE_SIGNING_ALLOWED=NO
+          BUILT=$(xcodebuild -project blussh.xcodeproj -scheme blussh \
+            -configuration Release -showBuildSettings 2>/dev/null \
+            | awk '/ BUILT_PRODUCTS_DIR/{print $3}')
+          # CI has no signing identity; ad-hoc sign (required on Apple Silicon)
+          codesign --force --deep -s - "${BUILT}/blussh.app"
+          ditto -c -k --keepParent "${BUILT}/blussh.app" "blussh-${GITHUB_REF_NAME}.zip"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "blussh-${GITHUB_REF_NAME}.zip" \
+            --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Update Homebrew tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          SHA256=$(shasum -a 256 "blussh-${GITHUB_REF_NAME}.zip" | awk '{print $1}')
+
+          KEY_FILE=$(mktemp)
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$KEY_FILE"
+          export GIT_SSH_COMMAND="ssh -i $KEY_FILE -o StrictHostKeyChecking=accept-new"
+
+          git clone --depth 1 git@github.com:blusa/homebrew-tap.git tap
+          mkdir -p tap/Casks
+          scripts/make-cask.sh "$VERSION" "$SHA256" > tap/Casks/blussh.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/blussh.rb
+          git commit -m "blussh ${VERSION}"
+          git push
