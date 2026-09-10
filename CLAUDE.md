@@ -42,7 +42,7 @@ engine monitors them:
 2. **MonitoringEngine** (`blussh/MonitoringEngine.swift`): ObservableObject running the cycle: discover from enabled sources concurrently → merge ssh-config entries into matching VPN hosts → auto-detect SSH servers (one-time port-22 probe, persisted) → concurrent TCP checks → debounce (2 consecutive readings to confirm a state flip) → notify → publish.
 
 3. **Host sources** (`HostSource` protocol returning `DiscoveryResult`):
-   - `SSHConfigSource`: parses ssh config files (direct read, symlinks resolved for GNU Stow, wildcard Host patterns skipped)
+   - `SSHConfigSource`: parses ssh config files (direct read, symlinks resolved for GNU Stow, wildcard Host patterns skipped; a multi-name `Host a a.example` line yields one host named after the first name, the rest kept as aliases)
    - `TailscaleSource`: runs `tailscale status --json` (binary auto-detected, override via `tailscaleBinaryPath` default)
    - `ZeroTierSource`: local API (`localhost:9993` + authtoken.secret) for joined networks, Central API for named members
 
