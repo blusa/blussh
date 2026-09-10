@@ -54,9 +54,20 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           printf '%s' "$ASC_API_KEY_P8" > "$RUNNER_TEMP/asc.p8"
-          xcrun notarytool submit "blussh-${GITHUB_REF_NAME}.zip" \
+          # submit --wait exits 0 even when the verdict is Invalid; check the
+          # status ourselves and surface Apple's log instead of letting
+          # stapler fail later with a cryptic "Record not found"
+          RESULT=$(xcrun notarytool submit "blussh-${GITHUB_REF_NAME}.zip" \
             --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
-            --issuer "$ASC_ISSUER_ID" --wait
+            --issuer "$ASC_ISSUER_ID" --wait --output-format json)
+          echo "$RESULT"
+          SUBMISSION_ID=$(echo "$RESULT" | jq -r .id)
+          if [ "$(echo "$RESULT" | jq -r .status)" != "Accepted" ]; then
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
+              --issuer "$ASC_ISSUER_ID"
+            exit 1
+          fi
           BUILT=$(xcodebuild -project blussh.xcodeproj -scheme blussh \
             -configuration Release -showBuildSettings 2>/dev/null \
             | awk '/ BUILT_PRODUCTS_DIR/{print $3}')
