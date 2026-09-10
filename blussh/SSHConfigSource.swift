@@ -31,19 +31,26 @@ struct SSHConfigSource: HostSource {
         var currentConfig: [String: String] = [:]
 
         func commit() {
-            if let host = currentConfig["host"], !hostIsPattern(host) {
-                hosts.append(MonitoredHost(
-                    id: "ssh:\(host)",
-                    name: host,
-                    origin: .sshConfig,
-                    address: currentConfig["hostname"] ?? host,
-                    user: currentConfig["user"],
-                    port: Int(currentConfig["port"] ?? "22") ?? 22,
-                    isSSHServer: true,
-                    sshAlias: host
-                ))
-            }
-            currentConfig = [:]
+            defer { currentConfig = [:] }
+            // A Host line may list several names ("Host devbox devbox.odinedge.xyz");
+            // the first non-pattern one is canonical, the rest are aliases.
+            let names = (currentConfig["host"] ?? "")
+                .split(whereSeparator: { $0 == " " || $0 == "\t" })
+                .map(String.init)
+                .filter { !hostIsPattern($0) }
+            guard let name = names.first else { return }
+            let address = currentConfig["hostname"] ?? name
+            hosts.append(MonitoredHost(
+                id: "ssh:\(name)",
+                name: name,
+                origin: .sshConfig,
+                address: address,
+                user: currentConfig["user"],
+                port: Int(currentConfig["port"] ?? "22") ?? 22,
+                isSSHServer: true,
+                aliases: (names + [address]).map { $0.lowercased() },
+                sshAlias: name
+            ))
         }
 
         for line in contents.components(separatedBy: .newlines) {
