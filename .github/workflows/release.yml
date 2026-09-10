@@ -18,9 +18,8 @@ jobs:
           SIGNING_CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
           SIGNING_CERT_P12_PASSWORD: ${{ secrets.SIGNING_CERT_P12_PASSWORD }}
         run: |
-          # Self-signed "blussh CI" identity: gives every release the same
-          # stable code signature so Keychain "Always Allow" grants survive
-          # updates (an ad-hoc signature changes per build and re-prompts).
+          # "Developer ID Application: Pablo Pusiol" identity (p12 includes
+          # Apple's Developer ID intermediate for a complete chain)
           KC="$RUNNER_TEMP/ci.keychain-db"
           security create-keychain -p ci "$KC"
           security set-keychain-settings -lut 21600 "$KC"
@@ -30,25 +29,40 @@ jobs:
             -P "$SIGNING_CERT_P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC" >/dev/null
           security list-keychains -d user -s "$KC" login.keychain-db
-          # A self-signed cert is only a usable identity once trusted
-          openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -clcerts -nokeys \
-            -passin "pass:$SIGNING_CERT_P12_PASSWORD" -out "$RUNNER_TEMP/cert.pem"
-          sudo security add-trusted-cert -d -r trustRoot \
-            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
           security find-identity -v -p codesigning "$KC"
 
       - name: Build
         run: |
           xcodebuild -project blussh.xcodeproj -scheme blussh \
             -configuration Release build -quiet \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM=VMGQ6AAMB5 \
+            ENABLE_HARDENED_RUNTIME=YES \
+            OTHER_CODE_SIGN_FLAGS="--timestamp"
           BUILT=$(xcodebuild -project blussh.xcodeproj -scheme blussh \
             -configuration Release -showBuildSettings 2>/dev/null \
             | awk '/ BUILT_PRODUCTS_DIR/{print $3}')
-          codesign --force --deep --keychain "$RUNNER_TEMP/ci.keychain-db" \
-            -s "blussh CI" "${BUILT}/blussh.app"
           codesign -d -r- "${BUILT}/blussh.app"
           ditto -c -k --keepParent "${BUILT}/blussh.app" "blussh-${GITHUB_REF_NAME}.zip"
+
+      - name: Notarize and staple
+        env:
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          printf '%s' "$ASC_API_KEY_P8" > "$RUNNER_TEMP/asc.p8"
+          xcrun notarytool submit "blussh-${GITHUB_REF_NAME}.zip" \
+            --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" --wait
+          BUILT=$(xcodebuild -project blussh.xcodeproj -scheme blussh \
+            -configuration Release -showBuildSettings 2>/dev/null \
+            | awk '/ BUILT_PRODUCTS_DIR/{print $3}')
+          xcrun stapler staple "${BUILT}/blussh.app"
+          # Re-zip so the published artifact carries the stapled ticket
+          ditto -c -k --keepParent "${BUILT}/blussh.app" "blussh-${GITHUB_REF_NAME}.zip"
+          spctl -a -t exec -vv "${BUILT}/blussh.app"
 
       - name: Create GitHub release
         env:

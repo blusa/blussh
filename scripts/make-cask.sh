@@ -20,11 +20,6 @@ cask "blussh" do
 
   app "blussh.app"
 
-  caveats <<~EOS
-    blussh is not notarized. Clear the quarantine flag after install:
-      xattr -dr com.apple.quarantine /Applications/blussh.app
-  EOS
-
   zap trash: "~/Library/Preferences/cloud.blusa.blussh.plist"
 end
 EOF
