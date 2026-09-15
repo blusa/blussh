@@ -34,6 +34,10 @@ back up.
 brew install blusa/tap/blussh
 ```
 
+The cask strips `com.apple.quarantine` after installing. The app is notarized,
+so Gatekeeper has already vouched for it, and a quarantined bundle that was
+never manually approved is silently refused when launchd starts it at login.
+
 ## Release
 
 ```bash
