@@ -20,6 +20,14 @@ cask "blussh" do
 
   app "blussh.app"
 
+  # Replacing the bundle under a running instance leaves processes pinned to a
+  # deleted bundle; Gatekeeper later rescans those, fails to read the missing
+  # file, and SIGKILLs every process it tracks for the app -- including the
+  # healthy one. Quit it before installing.
+  preflight_steps do
+    terminate_process "blussh"
+  end
+
   # Homebrew 6 dropped --no-quarantine, and a quarantined app that was never
   # manually approved is silently refused when launchd starts it at login
   # (the launch dies as xpcproxy). The app is notarized, so Gatekeeper has
