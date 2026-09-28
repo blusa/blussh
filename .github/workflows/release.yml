@@ -10,6 +10,10 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
+    defaults:
+      run:
+        # The Xcode project, cask template and release artifacts live in macos/
+        working-directory: macos
     steps:
       - uses: actions/checkout@v4
 
