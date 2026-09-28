@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "id": "blusa.blussh",
+  "name": "blussh",
+  "version": "1.0.0",
+  "author": "Pablo Pusiol",
+  "license": "MIT",
+  "description": "Host connectivity monitor: discovers hosts from ssh config, Tailscale and ZeroTier, shows live status and notifies when they go down or come back up.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "blussh",
+    "description": "Live status of your ssh config, Tailscale and ZeroTier hosts, with one-key ssh copy and connect.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "sources": [],
+      "sshConfigPaths": "~/.ssh/config",
+      "notifications": true,
+      "hideDisabled": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "description": "A state change must repeat on two consecutive checks before it notifies.",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "sources",
+        "type": "multiselect",
+        "label": "Host sources",
+        "description": "Where hosts are discovered from. Leave empty to use all of them.",
+        "noSelectionText": "All sources",
+        "placeholderText": "Search sources...",
+        "emptyText": "No sources",
+        "options": [
+          { "value": "ssh", "label": "SSH config", "description": "Host entries from your ssh config files" },
+          { "value": "tailscale", "label": "Tailscale", "description": "Peers from tailscale status --json" },
+          { "value": "zerotier", "label": "ZeroTier", "description": "Members of joined networks via ZeroTier Central" }
+        ],
+        "defaultValue": []
+      },
+      {
+        "key": "sshConfigPaths",
+        "type": "string",
+        "label": "SSH config files",
+        "description": "Comma-separated. Symlinks (GNU Stow) are resolved.",
+        "defaultValue": "~/.ssh/config"
+      },
+      {
+        "key": "notifications",
+        "type": "boolean",
+        "label": "Notifications",
+        "description": "Notify when a host goes down or comes back up.",
+        "defaultValue": true
+      },
+      {
+        "key": "hideDisabled",
+        "type": "boolean",
+        "label": "Hide hidden hosts",
+        "description": "Leave hosts you hid (which also stops monitoring them) out of the panel.",
+        "defaultValue": true
+      }
+    ]
+  }
+}

@@ -1,13 +1,21 @@
 <p align="center">
-  <img src="blussh/Assets.xcassets/AppIcon.appiconset/icon_256.png" width="128" alt="blussh icon">
+  <img src="macos/blussh/Assets.xcassets/AppIcon.appiconset/icon_256.png" width="128" alt="blussh icon">
 </p>
 
 # blussh
 
-macOS menu bar app that monitors host connectivity. Hosts are discovered
+Host connectivity monitor for your menu bar / status bar. Hosts are discovered
 automatically from your **SSH config**, **Tailscale** tailnet, and **ZeroTier**
 networks; blussh shows live status and notifies when a host goes down or comes
 back up.
+
+It comes in two native versions sharing the same behavior
+([`docs/monitoring-spec.md`](docs/monitoring-spec.md)):
+
+| | Where | Built with |
+|---|---|---|
+| **macOS** | menu bar app | SwiftUI — [`macos/`](macos/) |
+| **Omarchy** (Arch + Hyprland) | Omarchy shell bar widget | Quickshell QML + a Python backend — [`omarchy/`](omarchy/) |
 
 | Popover (dark) | Popover (light) | Settings |
 |---|---|---|
@@ -20,62 +28,59 @@ back up.
   API for joined networks + Central API for member names).
 - **Two liveness signals**: what the VPN control plane reports (`netOnline`)
   and a TCP port-22 probe (`sshOnline`) for hosts that run SSH. SSH servers are
-  auto-detected with a one-time probe; override per host from the context menu.
+  auto-detected with a one-time probe; override per host.
 - **Cross-source merge**: an ssh-config entry pointing at a VPN host's IP or
-  DNS name merges into it, so tap-to-copy yields `ssh user@alias`.
+  DNS name merges into it, so copying yields `ssh user@alias`.
 - **Debounced notifications**: a state flip must repeat on 2 consecutive checks
   before notifying — no alerts from a single dropped probe.
-- Groups with online counters, per-host enable toggles, hide-disabled switch,
-  tap to copy the ssh command, aggregate status dot in the menu bar.
+- Groups with online counters, hide hosts you don't care about, click to copy
+  the ssh command, and `HOSTNAME ●` with an aggregate status dot in the bar.
 
 ## Install
+
+### macOS
 
 ```bash
 brew install blusa/tap/blussh
 ```
 
-The cask strips `com.apple.quarantine` after installing. The app is notarized,
-so Gatekeeper has already vouched for it, and a quarantined bundle that was
-never manually approved is silently refused when launchd starts it at login.
+Requires macOS 15.3+. The app is signed and notarized; the cask also clears
+`com.apple.quarantine` so launch-at-login works. Build and release details:
+[`macos/README.md`](macos/README.md).
 
-## Release
+### Omarchy
 
-```bash
-scripts/release.sh 1.0.1
-```
-
-The script bumps `MARKETING_VERSION` (committing if needed) and pushes the
-`v1.0.1` tag. Pushing any `v*` tag triggers the
-[Release action](.github/workflows/release.yml), which:
-
-1. builds the app on a macOS runner with hardened runtime and signs it with
-   the "Developer ID Application: Pablo Pusiol" certificate (secrets
-   `SIGNING_CERT_P12` / `SIGNING_CERT_P12_PASSWORD`; expires 2027-02, renew
-   via the developer portal with the CSR in `~/.keys` on Buster),
-2. notarizes the zip with `notarytool` (App Store Connect API key secrets
-   `ASC_API_KEY_P8` / `ASC_KEY_ID` / `ASC_ISSUER_ID`) and staples the ticket,
-3. publishes `blussh-v<version>.zip` as a GitHub release with generated notes,
-4. regenerates `Casks/blussh.rb` (template: `scripts/make-cask.sh`) and pushes
-   it to [blusa/homebrew-tap](https://github.com/blusa/homebrew-tap).
-
-Cross-repo push uses a write deploy key on the tap, stored as the
-`TAP_DEPLOY_KEY` secret in this repo. Watch a run with `gh run watch`.
-
-## Build
+Requires Omarchy 4 (the Quickshell-based Omarchy shell). Python 3, `jq` and
+`wl-copy` ship with Omarchy; Tailscale and ZeroTier are optional.
 
 ```bash
-xcodebuild -project blussh.xcodeproj -scheme blussh -configuration Release build
+git clone https://github.com/blusa/blussh.git
+cd blussh
+omarchy/install.sh
 ```
 
-Not sandboxed (it execs the tailscale CLI and reads ZeroTier's authtoken).
-The ZeroTier Central API token is stored in the Keychain.
+The installer validates the plugin, copies it to
+`~/.config/omarchy/plugins/blusa.blussh`, adds it to the right side of the bar
+and links the `blussh` CLI into `~/.local/bin`. To update, `git pull` and run
+it again. To remove it: `omarchy plugin remove blusa.blussh`.
+
+Open the widget and press `,` (or the gear) to add ssh config files and set up
+ZeroTier. Usage, keyboard shortcuts and ZeroTier setup:
+[`omarchy/README.md`](omarchy/README.md).
+
+## Repository layout
+
+```
+macos/     SwiftUI app, Xcode project, release scripts (Homebrew cask)
+omarchy/   Omarchy shell plugin: manifest, QML UI, blussh.py engine, tests
+docs/      shared functional spec, design notes, screenshots
+```
 
 ## Docs
 
 - [`docs/monitoring-spec.md`](docs/monitoring-spec.md) — platform-agnostic
-  functional spec: every external interface (verified JSON shapes), algorithms
-  (merge, liveness, debounce), and notes for porting to an Omarchy/Waybar
-  taskbar plugin.
+  functional spec: every external interface (verified JSON shapes) and the
+  algorithms (merge, liveness, debounce) both versions implement.
 - [`docs/superpowers/specs/2026-09-02-vpn-discovery-design.md`](docs/superpowers/specs/2026-09-02-vpn-discovery-design.md)
   — design decisions behind the VPN discovery feature.
 

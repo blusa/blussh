@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-blussh is a native macOS menu bar application built with SwiftUI that monitors host connectivity. It discovers hosts from SSH config files, Tailscale, and ZeroTier, shows live status in a popover, and notifies when hosts go down or come back up.
+blussh monitors host connectivity. It ships as two native versions: a macOS menu bar app built with SwiftUI (`macos/`) and an Omarchy shell bar widget (`omarchy/`, see "Omarchy port" below). The sections below describe the macOS app unless noted. It discovers hosts from SSH config files, Tailscale, and ZeroTier, shows live status in a popover, and notifies when hosts go down or come back up.
 
 ## Development Commands
+
+macOS commands run from `macos/` (the Xcode project lives there).
 
 ### Building
 ```bash
@@ -20,7 +22,7 @@ xcodebuild -project blussh.xcodeproj -scheme blussh -configuration Release
 xcodebuild -project blussh.xcodeproj -scheme blussh clean
 
 # Run the app (after building)
-open build/Debug/blussh.app
+open build/Debug/blussh.app   # from macos/
 ```
 
 ### Testing
@@ -37,9 +39,9 @@ Design spec: `docs/superpowers/specs/2026-09-02-vpn-discovery-design.md`
 MVVM with Combine/async-await. Hosts come from pluggable sources; a central
 engine monitors them:
 
-1. **AppDelegate** (`blussh/AppDelegate.swift`): Bridges SwiftUI with AppKit, manages the NSStatusItem (hostname + colored status dot).
+1. **AppDelegate** (`macos/blussh/AppDelegate.swift`): Bridges SwiftUI with AppKit, manages the NSStatusItem (hostname + colored status dot).
 
-2. **MonitoringEngine** (`blussh/MonitoringEngine.swift`): ObservableObject running the cycle: discover from enabled sources concurrently → merge ssh-config entries into matching VPN hosts → auto-detect SSH servers (one-time port-22 probe, persisted) → concurrent TCP checks → debounce (2 consecutive readings to confirm a state flip) → notify → publish.
+2. **MonitoringEngine** (`macos/blussh/MonitoringEngine.swift`): ObservableObject running the cycle: discover from enabled sources concurrently → merge ssh-config entries into matching VPN hosts → auto-detect SSH servers (one-time port-22 probe, persisted) → concurrent TCP checks → debounce (2 consecutive readings to confirm a state flip) → notify → publish.
 
 3. **Host sources** (`HostSource` protocol returning `DiscoveryResult`):
    - `SSHConfigSource`: parses ssh config files (direct read, symlinks resolved for GNU Stow, wildcard Host patterns skipped; a multi-name `Host a a.example` line yields one host named after the first name, the rest kept as aliases)
@@ -59,8 +61,19 @@ engine monitors them:
 ### Testing without a test target
 `MonitoringEngine.merge` and `applyDebounce` are internal (not private) so they
 can be smoke-tested by compiling the sources with
-`swiftc -parse-as-library blussh/*.swift <harness>.swift` plus a small `@main`
+`swiftc -parse-as-library macos/blussh/*.swift <harness>.swift` plus a small `@main`
 async harness (UI files excluded).
+
+### Omarchy port (`omarchy/`)
+Omarchy 4 shell (Quickshell) bar-widget plugin, id `blusa.blussh`. `blussh.py`
+is a stdlib-only Python port of MonitoringEngine (state in
+`~/.local/state/blussh/state.json`); `Service.qml` runs `blussh.py check` on a
+timer and `Panel.qml` renders it using Omarchy's `qs.Ui` components, modeled on
+`/usr/share/omarchy/shell/plugins/panels/tailscale/`. Keep behavior changes in
+sync between the Swift engine and `blussh.py`. Tests:
+`python3 omarchy/test_blussh.py`. Dev install: `omarchy/install.sh --link`,
+then `omarchy restart shell` after QML edits (symlinked plugins don't
+hot-reload).
 
 ## Common Development Tasks
 
