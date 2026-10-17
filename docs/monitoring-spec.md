@@ -3,7 +3,7 @@
 This documents *what* blussh does and every external interface it touches, so the
 same functionality can be reimplemented elsewhere — specifically as an
 Omarchy (Arch + Hyprland) taskbar plugin for Waybar. The macOS app
-(`blussh/*.swift`) is the reference implementation; design history in
+(`macos/blussh/*.swift`) is the reference implementation; design history in
 `docs/superpowers/specs/2026-09-02-vpn-discovery-design.md`.
 
 ## Overview
@@ -174,6 +174,12 @@ Settings: per-source enable flags, refresh interval (5 s/10 s/1 m/5 m),
 notifications on/off, ZeroTier Central token.
 
 ## Omarchy / Waybar plugin notes
+
+> **Superseded:** Omarchy 4 replaced Waybar/walker/mako with the Quickshell
+> based Omarchy shell, so the port in [`omarchy/`](../omarchy/) is a native
+> shell bar-widget plugin instead (QML UI + `blussh.py` engine). The notes
+> below are kept for reference; the stateless-backend approach and state file
+> carried over unchanged.
 
 Suggested shape: one script (Python fits Omarchy conventions) run by a Waybar
 `custom` module, plus the same script's `--menu` mode bound to click.

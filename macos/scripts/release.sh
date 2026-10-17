@@ -3,13 +3,13 @@
 # The Release GitHub Action (.github/workflows/release.yml) then builds the
 # app, publishes the GitHub release, and updates the cask in blusa/homebrew-tap.
 #
-# Usage: scripts/release.sh <version>          e.g. scripts/release.sh 1.0.1
+# Usage: macos/scripts/release.sh <version>    e.g. macos/scripts/release.sh 1.0.1
 set -euo pipefail
 
-VERSION=${1:?usage: scripts/release.sh <version>}
+VERSION=${1:?usage: macos/scripts/release.sh <version>}
 TAG="v${VERSION}"
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.."  # macos/
 
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "error: working tree not clean" >&2
