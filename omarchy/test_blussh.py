@@ -184,6 +184,28 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(copied, [])
         self.assertNotIn(FAKE_TOKEN, json.dumps(result))
 
+    def test_qr_mode_returns_an_svg_and_copies_nothing(self):
+        run, _ = self.fake_run(PAIR_OUTPUT)
+        encoded, copied = [], []
+
+        def render(url):
+            encoded.append(url)
+            return '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+        result = blussh.t3_pair("brak", "brak.tail.ts.net", "dexter", run=run, copy=copied.append,
+                                qr=True, render_qr=render)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["qrSvg"].startswith("<svg"))
+        self.assertEqual(encoded, [f"https://brak.tail.ts.net/pair#token={FAKE_TOKEN}"])
+        self.assertEqual(copied, [])
+        # The token is only inside the QR's modules, never as text
+        self.assertNotIn(FAKE_TOKEN, json.dumps(result))
+
+    @unittest.skipUnless(shutil.which("qrencode"), "qrencode not installed")
+    def test_render_qr_with_qrencode(self):
+        svg = blussh.render_qr(f"https://brak.tail.ts.net/pair#token={FAKE_TOKEN}")
+        self.assertIn("<svg", svg)
+        self.assertNotIn(FAKE_TOKEN, svg)
+
     def test_local_pair_runs_without_ssh(self):
         run, calls = self.fake_run(PAIR_OUTPUT)
         blussh.t3_pair(None, "brak.tail.ts.net", "dexter", run=run, copy=lambda _: None)

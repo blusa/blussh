@@ -23,6 +23,9 @@ Item {
   property string lastError: ""
   property var me: null             // this machine (Tailscale Self), only for T3 pairing
   property string pairingHostId: ""
+  // { name, message, svg } while the pairing QR popup is up; cleared on close
+  // so the link (inside the QR) doesn't outlive it
+  property var pairingQr: null
   readonly property bool busy: checkProcess.running
   readonly property bool pairing: pairProcess.running
 
@@ -43,6 +46,7 @@ Item {
   property bool _refreshAgain: false
   property string _output: ""
   property string _error: ""
+  property string _pairingName: ""
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -137,19 +141,23 @@ Item {
 
   // The backend mints the link over ssh and copies it itself: the pairing
   // token never reaches QML, the shell's logs or a saved stderr.
-  function t3Pair(host) {
+  function t3Pair(host, asQr) {
     if (!host || host.placeholder || !host.isT3 || !host.magicDNS) return
     if (pairProcess.running) { flash("Already minting a T3 pairing link…"); return }
     var local = host.isSelf === true
     if (!local && !host.isSSHServer) { flash("T3 pairing needs SSH access to " + host.name); return }
     var command = ["python3", scriptPath, "t3-pair", "--notify", "--dns", host.magicDNS, "--name", host.name]
     if (!local) command.push("--target", sshTarget(host))
+    if (asQr) command.push("--qr")
     pairingHostId = host.id
+    _pairingName = host.name
     actionStatusTimer.stop()
-    actionStatus = "Minting T3 pairing link for " + host.name + "…"
+    actionStatus = "Minting T3 pairing " + (asQr ? "QR" : "link") + " for " + host.name + "…"
     pairProcess.command = command
     pairProcess.running = true
   }
+
+  function clearQr() { pairingQr = null }
 
   function setIsT3(host, isT3) {
     setOverride(host, "isT3", "t3", isT3)
@@ -230,10 +238,15 @@ Item {
     command: []
     stdout: StdioCollector { id: pairStdout; waitForEnd: true }
     onExited: function(exitCode) {
-      var message = ""
-      try { message = JSON.parse(String(pairStdout.text || "").trim()).message } catch (e) {}
+      var result = {}
+      try { result = JSON.parse(String(pairStdout.text || "").trim()) } catch (e) {}
       root.pairingHostId = ""
-      root.flash(message || ("T3 pairing failed (exit " + exitCode + ")"))
+      if (result.ok && result.qrSvg) {
+        root.actionStatus = ""
+        root.pairingQr = { name: root._pairingName, message: String(result.message || ""), svg: String(result.qrSvg) }
+      } else {
+        root.flash(result.message || ("T3 pairing failed (exit " + exitCode + ")"))
+      }
     }
   }
 

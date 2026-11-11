@@ -267,7 +267,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.actionMenuOpen
+      blocked: root.actionMenuOpen || qrPopup.opened
       onMoveRequested: function(dx, dy) {
         if (root.view !== "hosts") return
         if (dx > 0 && root.cursorActive) root.openActionMenu(root.selectedHost())
@@ -292,6 +292,7 @@ Panel {
         else if (t === "m" || t === "M") blussh.setEnabled(host, !host.enabled)
         else if (t === "s" || t === "S") blussh.setIsSSHServer(host, !host.isSSHServer)
         else if (t === "p" || t === "P") blussh.t3Pair(host)
+        else if (t === "q" || t === "Q") blussh.t3Pair(host, true)
         else if (t === "t" || t === "T") { if (host.monitorCommand) { blussh.openMonitor(host); root.close() } }
       }
 
@@ -459,6 +460,7 @@ Panel {
           var list = [{ kind: "copy", label: "Copy " + host.sshCommand, glyph: "󰆏" }]
           if (host.isSSHServer) list.push({ kind: "open", label: "Open ssh session", glyph: "󰆍" })
           if (host.isT3) list.push({ kind: "t3", label: "Copy T3 pairing link", glyph: "󰌹" })
+          if (host.isT3) list.push({ kind: "t3qr", label: "Show T3 pairing QR", glyph: "󰐲" })
           if (host.monitorCommand) list.push({ kind: "top", label: "Monitor (btop · htop · top)", glyph: "󰓅" })
           list.push({ kind: "monitor", label: host.enabled ? "Hide host (stops monitoring)" : "Show and monitor again", glyph: host.enabled ? "󰈉" : "󰈈" })
           if (host.netOnline !== null && host.netOnline !== undefined)
@@ -483,6 +485,7 @@ Panel {
           else if (kind === "monitor") blussh.setEnabled(h, !h.enabled)
           else if (kind === "ssh") blussh.setIsSSHServer(h, !h.isSSHServer)
           else if (kind === "t3") blussh.t3Pair(h)
+          else if (kind === "t3qr") blussh.t3Pair(h, true)
           else if (kind === "top") { blussh.openMonitor(h); root.close() }
           else if (kind === "t3toggle") blussh.setIsT3(h, !h.isT3)
         }
@@ -562,6 +565,88 @@ Panel {
                 }
               }
             }
+          }
+        }
+      }
+
+      // Pairing QR for a phone: right-click T3, "Show T3 pairing QR" or `q`
+      Popup {
+        id: qrPopup
+        readonly property var qr: blussh.pairingQr
+        anchors.centerIn: parent
+        width: Style.space(300)
+        padding: Style.space(16)
+        modal: false
+        focus: true
+        onQrChanged: if (qr !== null) open()
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        onClosed: blussh.clearQr()
+        onOpenedChanged: {
+          if (opened) Qt.callLater(function() { qrContent.forceActiveFocus() })
+          else if (root.opened) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+        }
+
+        background: BorderSurface {
+          color: Color.background
+          borderSpec: Border.flat(root.dim, 1)
+          radius: Style.cornerRadius
+        }
+
+        contentItem: Column {
+          id: qrContent
+          spacing: Style.space(10)
+          focus: true
+          Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Escape || event.text === "q" || event.key === Qt.Key_Return) {
+              qrPopup.close()
+              event.accepted = true
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: qrPopup.qr ? "Pair with " + qrPopup.qr.name : ""
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            horizontalAlignment: Text.AlignHCenter
+          }
+
+          // Always black on white with a quiet zone, whatever the theme
+          Rectangle {
+            width: parent.width
+            height: width
+            color: "white"
+            radius: Style.cornerRadius
+            Image {
+              // A whole number of pixels per module: a fractional scale leaves
+              // seams between modules that phone cameras can't read past
+              readonly property int modules: {
+                var m = qrPopup.qr ? /viewBox="0 0 (\d+)/.exec(qrPopup.qr.svg) : null
+                return m ? parseInt(m[1], 10) : 0
+              }
+              readonly property int side: modules > 0 ? Math.floor((parent.width - Style.space(8)) / modules) * modules : 0
+              anchors.centerIn: parent
+              width: side
+              height: side
+              source: qrPopup.qr ? "data:image/svg+xml;base64," + Qt.btoa(qrPopup.qr.svg) : ""
+              sourceSize.width: side
+              sourceSize.height: side
+              smooth: false
+              cache: false
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: qrPopup.qr ? qrPopup.qr.message : ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
           }
         }
       }
@@ -694,11 +779,20 @@ Panel {
     readonly property bool minting: blussh.pairing && host !== null && blussh.pairingHostId === host.id
     iconText: "T3"
     fontSize: Style.font.bodySmall
-    tooltipText: minting ? "Minting pairing link…" : "Copy T3 pairing link (p)"
+    tooltipText: minting ? "Minting pairing link…" : "Copy T3 pairing link (p) · right-click for a QR (q)"
     foreground: root.foreground
     fontFamily: root.fontFamily
     enabled: !blussh.pairing
     opacity: minting ? 0.45 : 1.0
     onClicked: blussh.t3Pair(host)
+
+    // Right-click: show the link as a QR to scan with a phone. Only takes the
+    // right button, so hover and left clicks still reach the button below.
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.RightButton
+      enabled: parent.enabled
+      onClicked: blussh.t3Pair(parent.host, true)
+    }
   }
 }

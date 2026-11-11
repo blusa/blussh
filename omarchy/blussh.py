@@ -471,9 +471,26 @@ def copy_sensitive(text):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=True)
 
 
-def t3_pair(target, magic_dns, label, run=subprocess.run, copy=copy_sensitive):
+def render_qr(text):
+    """QR code of `text` as SVG markup, rendered in memory (never written to disk).
+
+    Black on white with a quiet zone whatever the theme, so phone cameras read it.
+    """
+    if not shutil.which("qrencode"):
+        raise SourceError("qrencode not installed — sudo pacman -S qrencode")
+    # The URL goes in on stdin: argv is world-readable in /proc
+    out = subprocess.run(["qrencode", "-t", "SVG", "--svg-path", "-o", "-", "-m", "2", "-l", "M"],
+                         input=text, capture_output=True, text=True, timeout=10)
+    svg = out.stdout[out.stdout.find("<svg"):] if out.returncode == 0 else ""
+    if not svg:
+        raise SourceError("qrencode failed")
+    return svg
+
+
+def t3_pair(target, magic_dns, label, run=subprocess.run, copy=copy_sensitive, qr=False, render_qr=render_qr):
     """Mint a T3 pairing link on `target` (ssh destination, None = this machine)
-    and copy it. The result never contains the token: callers print it."""
+    and copy it, or with `qr` return it as a QR code SVG instead. The result
+    never contains the token as text: callers print it."""
     script = t3_pair_script(label)
     if target:
         cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target, "bash -lc " + shlex.quote(script)]
@@ -492,6 +509,13 @@ def t3_pair(target, magic_dns, label, run=subprocess.run, copy=copy_sensitive):
         lines = [l for l in redact(ANSI.sub("", (out.stderr or "") + (out.stdout or ""))).splitlines() if l.strip()]
         reason = lines[-1].strip()[:200] if lines else f"exit {out.returncode}"
         return {"ok": False, "message": f"no pairing link from {where}: {reason}"}
+    if qr:
+        try:
+            svg = render_qr(url)
+        except (SourceError, OSError, subprocess.SubprocessError) as e:
+            return {"ok": False, "message": f"couldn't draw the pairing QR: {e}"}
+        return {"ok": True, "message": f"Scan to pair with {magic_dns or where} · expires in {T3_PAIR_TTL}",
+                "qrSvg": svg}
     try:
         copy(url)
     except (OSError, subprocess.SubprocessError):
@@ -741,10 +765,12 @@ def cmd_set(args):
 def cmd_t3_pair(args):
     """Used by the panel: copies the link itself, prints JSON without the token."""
     label = args.label or socket.gethostname().split(".")[0]
-    result = t3_pair(args.target or None, args.dns, label)
+    result = t3_pair(args.target or None, args.dns, label, qr=args.qr)
     if args.notify:
         name = args.name or (args.dns or "").split(".")[0] or "this machine"
-        if result["ok"]:
+        if result["ok"] and args.qr:
+            pass  # the panel shows the QR itself
+        elif result["ok"]:
             send_notification(f"T3 pairing link for {name} copied", f"Paste it on the device to pair · expires in {T3_PAIR_TTL}",
                               glyph="󰌹")
         else:
@@ -887,6 +913,7 @@ def main():
     pair.add_argument("--name", help="host name for the notification")
     pair.add_argument("--label", help="connection label on the server (default: this machine's hostname)")
     pair.add_argument("--notify", action="store_true", help="send a desktop notification with the result")
+    pair.add_argument("--qr", action="store_true", help="don't copy: print the link as a QR code SVG (qrSvg)")
     pair.set_defaults(func=cmd_t3_pair)
 
     zta = sub.add_parser("zerotier-authtoken", help="copy ZeroTier's local authtoken so blussh can read it")

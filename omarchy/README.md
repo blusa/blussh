@@ -43,6 +43,7 @@ right-click for more. Keyboard:
 | `,` | settings |
 | `s` | toggle the SSH port check for the host |
 | `p` | copy a T3 Code pairing link (hosts with **T3**) |
+| `q` | show the T3 pairing link as a QR code, to pair a phone |
 | `t` | monitor: `btop`, else `htop`, else `top` over ssh |
 | `r` | refresh |
 | `esc` | close |
@@ -72,6 +73,11 @@ T3 server gets one in the panel header. Clicking it runs
 `t3 pair --tailscale --ttl 1h --label <this hostname>` on the host over ssh
 and copies just the Pairing URL (`https://<host>…/pair#token=…`) to the
 clipboard, with a notification. Paste it on the phone or laptop to pair.
+
+To pair a phone, **right-click T3** (or "Show T3 pairing QR" in the actions
+menu, or `q`): the same link is shown as a QR code to scan with the camera.
+Esc or a click outside closes it. The QR is drawn in memory with `qrencode`
+(`sudo pacman -S qrencode` if it's missing) and nothing is copied.
 
 - Detection probes each Tailscale host's Serve URL once and remembers the
   answer, like the SSH check. Wrong guess? "Show/Hide T3 pairing" in the

@@ -200,6 +200,12 @@ Tailscale Serve at `https://<name>.<MagicDNSSuffix>/`. For each Tailscale host
   URL), rewrite it to `https://<magicdns>` keeping path and fragment. Copy it
   to the clipboard marked sensitive (`wl-copy --sensitive`, which clipboard
   history managers skip) and notify success/failure.
+- **QR variant** (to pair a phone): same flow, but instead of copying, show
+  the Pairing URL as a QR code (black on white with a quiet zone regardless
+  of theme, ECC level M, integer pixels per module so it scans). Render it in
+  memory (Omarchy: `qrencode -t SVG --svg-path` fed on stdin; macOS:
+  `CIQRCodeGenerator`), never to a file. Omarchy: right-click the T3 button,
+  the actions menu, or `q`.
 - **Token hygiene**: the pairing output is held in memory only. The token is
   never printed, logged, persisted, or put in a notification; error messages
   are built from redacted output (`token=`, `token%3D`, `Token:`).
