@@ -93,6 +93,13 @@ final class MonitoringEngine: ObservableObject {
                 discovered[i].isSSHServer = override
             }
         }
+        // One-time cleanup: earlier builds persisted Self's auto-detected verdict, which
+        // would now act as an override (a stale "no" from a login-time probe hid local pairing).
+        if let selfId = me?.id, !defaults.bool(forKey: "hostIsT3SelfMigrated") {
+            var stored = defaults.dictionary(forKey: "hostIsT3/v2") as? [String: Bool] ?? [:]
+            if stored.removeValue(forKey: selfId) != nil { defaults.set(stored, forKey: "hostIsT3/v2") }
+            defaults.set(true, forKey: "hostIsT3SelfMigrated")
+        }
         let t3Dict = defaults.dictionary(forKey: "hostIsT3/v2") as? [String: Bool] ?? [:]
         for i in discovered.indices {
             discovered[i].isT3 = discovered[i].magicDNS != nil && (t3Dict[discovered[i].id] ?? false)
@@ -117,22 +124,20 @@ final class MonitoringEngine: ObservableObject {
         }
         defaults.set(sshDict, forKey: "hostIsSSH/v2")
 
-        // T3 Code: like the SSH auto-detect, probe each host's Tailscale Serve URL once.
-        // Only a DNS failure (nil) is retried next cycle; any other answer is a persisted verdict.
+        // T3 Code: probe peers once and persist (like the SSH auto-detect), Self every cycle.
+        // Only a DNS failure (nil) is retried next cycle; any other peer answer is a persisted verdict.
         var t3Verdicts: [String: Bool] = [:]
-        await withTaskGroup(of: (Int, Bool?).self) { group in
-            for (i, host) in (discovered + (me.map { [$0] } ?? [])).enumerated() {
-                guard let magic = host.magicDNS, !host.isPlaceholder, host.netOnline == true,
-                      t3Dict[host.id] == nil else { continue }
-                group.addTask { (i, await T3.probe(magicDNS: magic)) }
+        await withTaskGroup(of: (String, Bool?).self) { group in
+            for host in Self.t3ProbeTargets(discovered, me: me, stored: t3Dict) {
+                guard let magic = host.magicDNS else { continue }
+                group.addTask { (host.id, await T3.probe(magicDNS: magic)) }
             }
-            for await (i, verdict) in group {
+            for await (id, verdict) in group {
                 guard let verdict = verdict else { continue }
-                if i < discovered.count {
+                if id == me?.id {
+                    me?.isT3 = verdict  // never persisted
+                } else if let i = discovered.firstIndex(where: { $0.id == id }) {
                     discovered[i].isT3 = verdict
-                    t3Verdicts[discovered[i].id] = verdict
-                } else if let id = me?.id {
-                    me?.isT3 = verdict
                     t3Verdicts[id] = verdict
                 }
             }
@@ -173,6 +178,17 @@ final class MonitoringEngine: ObservableObject {
                 self.notifier.notify(host: host, isUp: isUp)
             }
         }
+    }
+
+    /// Hosts whose Tailscale Serve URL to probe for T3 Code this cycle (`t3_probe_targets` in blussh.py).
+    /// Peers are probed once and the verdict persisted, like the SSH auto-detect. This machine is
+    /// probed every cycle and never persisted: blussh often starts at login before the T3 service,
+    /// and a "no" saved then would hide local pairing for good. A user override still wins.
+    static func t3ProbeTargets(_ hosts: [MonitoredHost], me: MonitoredHost?, stored: [String: Bool]) -> [MonitoredHost] {
+        var targets = hosts.filter { $0.magicDNS != nil && $0.netOnline == true
+            && stored[$0.id] == nil && !$0.isPlaceholder }
+        if let me = me, me.magicDNS != nil, stored[me.id] == nil { targets.append(me) }
+        return targets
     }
 
     // MARK: - Merge ssh-config entries into matching VPN hosts
