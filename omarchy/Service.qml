@@ -48,6 +48,7 @@ Item {
   property string _error: ""
   property string _pairingName: ""
   property string _pairOutput: ""
+  property bool _pairCancelled: false
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -147,21 +148,40 @@ Item {
     t3Pair(host, false, access)
   }
 
-  function t3Pair(host, asQr, linkAccess) {
+  // Copies only the pairing code, to hand to another machine's prompt
+  function t3Code(host) {
+    t3Pair(host, false, "", true)
+  }
+
+  // A host that's down (or a wedged T3 server) would otherwise hold every
+  // T3 button until the backend's timeout
+  function cancelPairing() {
+    if (!pairProcess.running) return
+    _pairCancelled = true
+    pairProcess.running = false
+  }
+
+  function t3Pair(host, asQr, linkAccess, codeOnly) {
     if (!host || host.placeholder || !host.isT3 || !host.magicDNS) return
-    if (pairProcess.running) { flash("Already minting a T3 pairing link…"); return }
+    if (pairProcess.running) {
+      if (pairingHostId === host.id) cancelPairing()
+      else flash("Already minting a T3 pairing link… (esc cancels)")
+      return
+    }
     var local = host.isSelf === true
     if (!local && !host.isSSHServer) { flash("T3 pairing needs SSH access to " + host.name); return }
     var command = ["python3", scriptPath, "t3-pair", "--notify", "--dns", host.magicDNS, "--name", host.name]
     if (!local) command.push("--target", sshTarget(host))
     if (asQr) command.push("--qr")
     if (linkAccess) command.push("--link", linkAccess)
+    if (codeOnly) command.push("--code")
     pairingHostId = host.id
     _pairingName = host.name
     actionStatusTimer.stop()
     actionStatus = linkAccess ? "Linking " + host.name + " to T3 here (" + linkAccess + ")…"
                               : "Minting T3 pairing " + (asQr ? "QR" : "link") + " for " + host.name + "…"
     _pairOutput = ""
+    _pairCancelled = false
     pairProcess.command = command
     pairProcess.running = true
   }
@@ -253,7 +273,10 @@ Item {
       try { result = JSON.parse(root._pairOutput.trim()) } catch (e) {}
       root._pairOutput = ""
       root.pairingHostId = ""
-      if (result.ok && result.qrSvg) {
+      if (root._pairCancelled) {
+        root._pairCancelled = false
+        root.flash("Cancelled")
+      } else if (result.ok && result.qrSvg) {
         root.actionStatus = ""
         root.pairingQr = { name: root._pairingName, message: String(result.message || ""), svg: String(result.qrSvg) }
       } else {

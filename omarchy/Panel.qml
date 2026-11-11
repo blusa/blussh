@@ -171,9 +171,14 @@ Panel {
     })
   }
 
-  // Linking needs ssh to the host and a T3 server on this machine to link it to
+  // Minting runs over ssh, so the host must be up (this machine always is)
+  function canPairT3(host) {
+    return !!host && host.isT3 === true && (host.isSelf === true || host.netOnline !== false)
+  }
+
+  // Linking also needs a T3 server on this machine to link the host to
   function canLinkT3(host) {
-    return !!host && host.isT3 === true && host.isSSHServer === true && host.isSelf !== true
+    return canPairT3(host) && host.isSSHServer === true && host.isSelf !== true
       && blussh.me !== null && blussh.me.isT3 === true
   }
 
@@ -291,7 +296,8 @@ Panel {
       }
       onActivateRequested: if (root.view === "hosts" && root.cursorActive) blussh.copySshCommand(root.selectedHost())
       onCloseRequested: {
-        if (root.view !== "hosts") root.view = "hosts"
+        if (blussh.pairing) blussh.cancelPairing()
+        else if (root.view !== "hosts") root.view = "hosts"
         else root.close()
       }
       onDeleteRequested: if (root.view === "hosts" && root.cursorActive) root.toggleHidden(root.selectedHost())
@@ -307,8 +313,8 @@ Panel {
         else if (t === "o" || t === "O") { blussh.openSsh(host); root.close() }
         else if (t === "m" || t === "M") blussh.setEnabled(host, !host.enabled)
         else if (t === "s" || t === "S") blussh.setIsSSHServer(host, !host.isSSHServer)
-        else if (t === "p" || t === "P") blussh.t3Pair(host)
-        else if (t === "q" || t === "Q") blussh.t3Pair(host, true)
+        else if ((t === "p" || t === "P") && root.canPairT3(host)) blussh.t3Pair(host)
+        else if ((t === "q" || t === "Q") && root.canPairT3(host)) blussh.t3Pair(host, true)
         else if (t === "t" || t === "T") { if (host.monitorCommand) { blussh.openMonitor(host); root.close() } }
       }
 
@@ -478,8 +484,11 @@ Panel {
           if (mode === "link") return root.linkLevels
           var list = [{ kind: "copy", label: "Copy " + host.sshCommand, glyph: "󰆏" }]
           if (host.isSSHServer) list.push({ kind: "open", label: "Open ssh session", glyph: "󰆍" })
-          if (host.isT3) list.push({ kind: "t3", label: "Copy T3 pairing link", glyph: "󰌹" })
-          if (host.isT3) list.push({ kind: "t3qr", label: "Show T3 pairing QR", glyph: "󰐲" })
+          if (root.canPairT3(host)) {
+            list.push({ kind: "t3", label: "Copy T3 pairing link", glyph: "󰌹" })
+            list.push({ kind: "t3qr", label: "Show T3 pairing QR", glyph: "󰐲" })
+            list.push({ kind: "t3code", label: "Copy T3 pairing code", glyph: "󰆏" })
+          }
           if (root.canLinkT3(host)) list.push({ kind: "t3link", label: "Link to T3 here  ›", glyph: "󰌷" })
           if (host.monitorCommand) list.push({ kind: "top", label: "Monitor (btop · htop · top)", glyph: "󰓅" })
           list.push({ kind: "monitor", label: host.enabled ? "Hide host (stops monitoring)" : "Show and monitor again", glyph: host.enabled ? "󰈉" : "󰈈" })
@@ -508,6 +517,7 @@ Panel {
           else if (kind === "ssh") blussh.setIsSSHServer(h, !h.isSSHServer)
           else if (kind === "t3") blussh.t3Pair(h)
           else if (kind === "t3qr") blussh.t3Pair(h, true)
+          else if (kind === "t3code") blussh.t3Code(h)
           else if (kind === "top") { blussh.openMonitor(h); root.close() }
           else if (kind === "t3toggle") blussh.setIsT3(h, !h.isT3)
         }
@@ -529,7 +539,9 @@ Panel {
           focus: true
           Keys.priority: Keys.BeforeItem
           Keys.onPressed: function(event) {
-            if ((event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") && actionMenu.mode !== "") {
+            if (event.key === Qt.Key_Escape && blussh.pairing) {
+              blussh.cancelPairing()
+            } else if ((event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") && actionMenu.mode !== "") {
               actionMenu.mode = ""
               actionMenu.index = 0
             } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") {
@@ -804,10 +816,13 @@ Panel {
     readonly property bool minting: blussh.pairing && host !== null && blussh.pairingHostId === host.id
     iconText: "T3"
     fontSize: Style.font.bodySmall
-    tooltipText: minting ? "Minting pairing link…" : "Copy T3 pairing link (p) · right-click for a QR (q)"
+    readonly property bool reachable: root.canPairT3(host)
+    tooltipText: !reachable ? "Host is offline" : (minting ? "Minting pairing link… click or esc to cancel"
+                                                           : "Copy T3 pairing link (p) · right-click for a QR (q)")
     foreground: root.foreground
     fontFamily: root.fontFamily
-    enabled: !blussh.pairing
+    // Stays clickable while minting so a second click cancels
+    enabled: minting || (reachable && !blussh.pairing)
     opacity: minting ? 0.45 : 1.0
     onClicked: blussh.t3Pair(host)
 

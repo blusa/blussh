@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -139,6 +140,21 @@ class T3DetectionTests(unittest.TestCase):
         self.assertEqual((me["id"], me["magicDNS"]), ("ts:dexter", "dexter.tail.ts.net"))
 
 
+class RunGroupTests(unittest.TestCase):
+    def test_timeout_kills_the_whole_process_group(self):
+        # Like ssh with a ProxyCommand: the child's own children must die too
+        marker = f"blussh-test-{os.getpid()}"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            blussh.run_group(["bash", "-c", f"exec -a {marker} sleep 30 & wait"], timeout=1)
+        time.sleep(0.3)
+        left = subprocess.run(["pgrep", "-f", f"^{marker}"], capture_output=True, text=True).stdout.split()
+        self.assertEqual(left, [])
+
+    def test_returns_output(self):
+        out = blussh.run_group(["bash", "-c", "echo hi; echo err >&2; exit 3"], timeout=5)
+        self.assertEqual((out.returncode, out.stdout, out.stderr), (3, "hi\n", "err\n"))
+
+
 class T3ProbeTargetTests(unittest.TestCase):
     def test_peers_once_self_every_cycle(self):
         peer = blussh.host("ts:brak", "brak", "Tailscale", "1", "brak.t.ts.net", netOnline=True, magicDNS="brak.t.ts.net")
@@ -246,6 +262,21 @@ class PairingTests(unittest.TestCase):
     def test_link_environment_rejects_unknown_access(self):
         result = blussh.t3_link("brak", "brak.tail.ts.net", "dexter", "root", run=None, local_t3="/x/t3")
         self.assertFalse(result["ok"])
+
+    def test_code_only_copies_the_bare_code(self):
+        run, _ = self.fake_run(PAIR_OUTPUT)
+        copied = []
+        result = blussh.t3_pair("brak", "brak.tail.ts.net", "dexter", run=run, copy=copied.append, code_only=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(copied, [FAKE_TOKEN])
+        self.assertNotIn(FAKE_TOKEN, json.dumps(result))
+
+    def test_ssh_gives_up_on_dead_hosts(self):
+        run, calls = self.fake_run(PAIR_OUTPUT)
+        blussh.t3_pair("brak", "brak.tail.ts.net", "dexter", run=run, copy=lambda _: None)
+        self.assertIn("ConnectTimeout=10", calls[0])
+        self.assertIn("ServerAliveInterval=5", calls[0])
+        self.assertLessEqual(blussh.T3_PAIR_TIMEOUT, 60)
 
     def test_local_pair_runs_without_ssh(self):
         run, calls = self.fake_run(PAIR_OUTPUT)

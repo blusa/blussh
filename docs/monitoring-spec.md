@@ -222,6 +222,13 @@ Tailscale Serve at `https://<name>.<MagicDNSSuffix>/`. For each Tailscale host
   the macOS app looks for the local `t3` there explicitly. Note: T3's own
   MCP link card does *not* accept a `t3 pair` code (it expects an
   `mcp-approval:` code and fails with "pairing code is unknown"); the CLI does.
+- **Copy code only**: same mint, but copy just the token, for linking from
+  another machine (`t3 environment link … --pairing-code`). Offered on every
+  T3 host, also where this machine runs only the T3 client.
+- **Limits**: ssh `ConnectTimeout=10`, `ServerAliveInterval=5` ×2, whole run
+  60 s. Pairing actions are disabled for hosts with `netOnline == false`. A
+  running mint can be cancelled (Omarchy: click T3 again or Esc); cancelling
+  must kill the ssh child too.
 - **Token hygiene**: the pairing output is held in memory only. The token is
   never printed, logged, persisted, or put in a notification; error messages
   are built from redacted output (`token=`, `token%3D`, `Token:`).
