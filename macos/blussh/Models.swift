@@ -49,6 +49,12 @@ struct MonitoredHost: Identifiable {
     var aliases: [String] = []
     /// ssh-config Host alias; when set, the copied command uses it so ssh applies the user's config
     var sshAlias: String?
+    /// Tailscale MagicDNS name (DNSName within the tailnet's MagicDNSSuffix), where Tailscale Serve answers
+    var magicDNS: String?
+    /// Runs a T3 Code server published with Tailscale Serve (persisted detection verdict / user override)
+    var isT3: Bool = false
+    /// This machine (Tailscale Self): never monitored, only offered T3 pairing
+    var isSelf: Bool = false
 
     /// Combined liveness: VPN state gates first, then the SSH check if applicable.
     var isOnline: Bool {
@@ -60,11 +66,13 @@ struct MonitoredHost: Identifiable {
         return sshOnline ?? false
     }
 
-    var sshCommand: String {
+    /// ssh destination: `user@alias` when the ssh config supplies them, so ssh applies the user's config
+    var sshTarget: String {
         let hostPart = sshAlias ?? address
-        let target = user.map { "\($0)@\(hostPart)" } ?? hostPart
-        return "ssh \(target)"
+        return user.map { "\($0)@\(hostPart)" } ?? hostPart
     }
+
+    var sshCommand: String { "ssh \(sshTarget)" }
 }
 
 struct SourceError: Identifiable {

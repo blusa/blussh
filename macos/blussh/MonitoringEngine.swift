@@ -6,8 +6,10 @@ final class MonitoringEngine: ObservableObject {
     @Published var sourceErrors: [SourceError] = []
     @Published var lastUpdated: Date? = nil
     @Published var globalStatus: GlobalStatus = .notInitialized
+    /// This machine (Tailscale Self): not monitored, only offered T3 pairing
+    @Published var selfHost: MonitoredHost? = nil
 
-    private let notifier = NotificationManager()
+    let notifier = NotificationManager()
     private var timer: Timer?
     private var isRefreshing = false
 
@@ -46,6 +48,16 @@ final class MonitoringEngine: ObservableObject {
         }
     }
 
+    func setIsT3(_ isT3: Bool, hostId: String) {
+        persist(isT3, hostId: hostId, key: "hostIsT3/v2")
+        if let index = hosts.firstIndex(where: { $0.id == hostId }) {
+            hosts[index].isT3 = isT3 && hosts[index].magicDNS != nil
+        }
+        if selfHost?.id == hostId {
+            selfHost?.isT3 = isT3 && selfHost?.magicDNS != nil
+        }
+    }
+
     // MARK: - Cycle
 
     private func runCycle() async {
@@ -68,6 +80,7 @@ final class MonitoringEngine: ObservableObject {
         }
 
         var discovered = merge(results.flatMap { $0.hosts })
+        var me = results.compactMap { $0.selfHost }.first
         let errors = results.compactMap { $0.error }
 
         // Apply persisted per-host overrides
@@ -79,6 +92,21 @@ final class MonitoringEngine: ObservableObject {
             if let override = sshDict[discovered[i].id] {
                 discovered[i].isSSHServer = override
             }
+        }
+        // One-time cleanup: earlier builds persisted Self's auto-detected verdict, which
+        // would now act as an override (a stale "no" from a login-time probe hid local pairing).
+        if let selfId = me?.id, !defaults.bool(forKey: "hostIsT3SelfMigrated") {
+            var stored = defaults.dictionary(forKey: "hostIsT3/v2") as? [String: Bool] ?? [:]
+            if stored.removeValue(forKey: selfId) != nil { defaults.set(stored, forKey: "hostIsT3/v2") }
+            defaults.set(true, forKey: "hostIsT3SelfMigrated")
+        }
+        let t3Dict = defaults.dictionary(forKey: "hostIsT3/v2") as? [String: Bool] ?? [:]
+        for i in discovered.indices {
+            discovered[i].isT3 = discovered[i].magicDNS != nil && (t3Dict[discovered[i].id] ?? false)
+        }
+        if var m = me {
+            m.isT3 = m.magicDNS != nil && (t3Dict[m.id] ?? false)
+            me = m
         }
 
         // Auto-detect SSH: first time a VPN host is seen net-online, probe port 22 once
@@ -95,6 +123,31 @@ final class MonitoringEngine: ObservableObject {
             }
         }
         defaults.set(sshDict, forKey: "hostIsSSH/v2")
+
+        // T3 Code: probe peers once and persist (like the SSH auto-detect), Self every cycle.
+        // Only a DNS failure (nil) is retried next cycle; any other peer answer is a persisted verdict.
+        var t3Verdicts: [String: Bool] = [:]
+        await withTaskGroup(of: (String, Bool?).self) { group in
+            for host in Self.t3ProbeTargets(discovered, me: me, stored: t3Dict) {
+                guard let magic = host.magicDNS else { continue }
+                group.addTask { (host.id, await T3.probe(magicDNS: magic)) }
+            }
+            for await (id, verdict) in group {
+                guard let verdict = verdict else { continue }
+                if id == me?.id {
+                    me?.isT3 = verdict  // never persisted
+                } else if let i = discovered.firstIndex(where: { $0.id == id }) {
+                    discovered[i].isT3 = verdict
+                    t3Verdicts[id] = verdict
+                }
+            }
+        }
+        if !t3Verdicts.isEmpty {
+            // Re-read so an override the user made while probing wins
+            var stored = defaults.dictionary(forKey: "hostIsT3/v2") as? [String: Bool] ?? [:]
+            for (id, verdict) in t3Verdicts where stored[id] == nil { stored[id] = verdict }
+            defaults.set(stored, forKey: "hostIsT3/v2")
+        }
 
         // TCP checks, concurrently
         var checked = discovered
@@ -113,9 +166,11 @@ final class MonitoringEngine: ObservableObject {
 
         let transitions = applyDebounce(to: checked)
         let final = checked
+        let finalSelf = me
 
         await MainActor.run {
             self.hosts = final
+            self.selfHost = finalSelf
             self.sourceErrors = errors
             self.lastUpdated = Date()
             self.globalStatus = Self.computeGlobalStatus(final)
@@ -123,6 +178,17 @@ final class MonitoringEngine: ObservableObject {
                 self.notifier.notify(host: host, isUp: isUp)
             }
         }
+    }
+
+    /// Hosts whose Tailscale Serve URL to probe for T3 Code this cycle (`t3_probe_targets` in blussh.py).
+    /// Peers are probed once and the verdict persisted, like the SSH auto-detect. This machine is
+    /// probed every cycle and never persisted: blussh often starts at login before the T3 service,
+    /// and a "no" saved then would hide local pairing for good. A user override still wins.
+    static func t3ProbeTargets(_ hosts: [MonitoredHost], me: MonitoredHost?, stored: [String: Bool]) -> [MonitoredHost] {
+        var targets = hosts.filter { $0.magicDNS != nil && $0.netOnline == true
+            && stored[$0.id] == nil && !$0.isPlaceholder }
+        if let me = me, me.magicDNS != nil, stored[me.id] == nil { targets.append(me) }
+        return targets
     }
 
     // MARK: - Merge ssh-config entries into matching VPN hosts
