@@ -139,6 +139,21 @@ class T3DetectionTests(unittest.TestCase):
         self.assertEqual((me["id"], me["magicDNS"]), ("ts:dexter", "dexter.tail.ts.net"))
 
 
+class T3ProbeTargetTests(unittest.TestCase):
+    def test_peers_once_self_every_cycle(self):
+        peer = blussh.host("ts:brak", "brak", "Tailscale", "1", "brak.t.ts.net", netOnline=True, magicDNS="brak.t.ts.net")
+        me = blussh.host("ts:dexter", "dexter", "Tailscale", "1", "dexter.t.ts.net", netOnline=True,
+                         magicDNS="dexter.t.ts.net", isSelf=True)
+        fresh = {"isT3": {}}
+        self.assertEqual([h["id"] for h in blussh.t3_probe_targets([peer], me, fresh)], ["ts:brak", "ts:dexter"])
+        # brak has a persisted verdict; this machine never gets one, so it's probed again
+        seen = {"isT3": {"ts:brak": False}}
+        self.assertEqual([h["id"] for h in blussh.t3_probe_targets([peer], me, seen)], ["ts:dexter"])
+        # ...unless the user set an override for it
+        overridden = {"isT3": {"ts:brak": False, "ts:dexter": True}}
+        self.assertEqual(blussh.t3_probe_targets([peer], me, overridden), [])
+
+
 class PairingTests(unittest.TestCase):
     def test_extracts_only_the_pairing_url(self):
         url = blussh.extract_pairing_url(PAIR_OUTPUT, "brak.tail.ts.net")

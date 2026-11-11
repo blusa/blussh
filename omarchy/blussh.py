@@ -695,6 +695,21 @@ def send_notification(title, body, urgent=False, glyph=None):
         pass
 
 
+def t3_probe_targets(hosts, me, state):
+    """Hosts whose Tailscale Serve URL to probe for T3 Code this cycle.
+
+    Peers are probed once and the verdict persisted, like the SSH auto-detect.
+    This machine is probed every cycle and never persisted: the shell often
+    starts before the T3 service at login, and a "no" saved then would hide
+    local pairing for good. A user override (blussh set <id> t3) still wins.
+    """
+    targets = [h for h in hosts if h["magicDNS"] and h["netOnline"] is True
+               and h["id"] not in state["isT3"] and not h["placeholder"]]
+    if me and me["magicDNS"] and me["id"] not in state["isT3"]:
+        targets.append(me)
+    return targets
+
+
 def run_cycle(sources, ssh_paths, notifications):
     discoverers = []
     if "ssh" in sources:
@@ -747,13 +762,12 @@ def run_cycle(sources, ssh_paths, notifications):
         for h, online in zip(probe, pool.map(lambda h: check_tcp(h["address"], h["port"]), probe)):
             h["sshOnline"] = online
 
-        # T3 Code: like the SSH auto-detect, probe each host's Tailscale Serve URL once
-        t3_detect = [h for h in hosts + ([me] if me else []) if h["magicDNS"] and h["netOnline"] is True
-                     and h["id"] not in state["isT3"] and not h["placeholder"]]
+        t3_detect = t3_probe_targets(hosts, me, state)
         for h, verdict in zip(t3_detect, pool.map(lambda h: probe_t3(h["magicDNS"]), t3_detect)):
             if verdict is not None:
                 h["isT3"] = verdict
-                verdicts_t3[h["id"]] = verdict
+                if not h["isSelf"]:
+                    verdicts_t3[h["id"]] = verdict
     for h in hosts:
         if h["isSSHServer"] and h["netOnline"] is False:
             h["sshOnline"] = False
