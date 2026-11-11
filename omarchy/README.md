@@ -29,7 +29,8 @@ traffic-light colors on grayscale themes so the dot stays readable. Left click
 opens the panel; middle or right click refreshes.
 
 In the panel, click a host to copy its ssh command, click the terminal button
-to open an ssh session, or right-click for more. Keyboard:
+to open an ssh session, click **T3** to copy a T3 Code pairing link, or
+right-click for more. Keyboard:
 
 | Key | Action |
 |---|---|
@@ -41,6 +42,9 @@ to open an ssh session, or right-click for more. Keyboard:
 | `.` | show or hide the hidden hosts |
 | `,` | settings |
 | `s` | toggle the SSH port check for the host |
+| `p` | copy a T3 Code pairing link (hosts with **T3**) |
+| `q` | show the T3 pairing link as a QR code, to pair a phone |
+| `t` | monitor: `btop`, else `htop`, else `top` over ssh |
 | `r` | refresh |
 | `esc` | close |
 
@@ -60,6 +64,45 @@ Settings sheet:
 They are stored in this widget's entry in `~/.config/omarchy/shell.json`, so
 the bar settings panel and `omarchy bar set blusa.blussh <key> <value>` see
 the same values.
+
+### T3 Code pairing
+
+Hosts that publish a T3 Code server with Tailscale Serve
+(`https://<host>.<tailnet>.ts.net/`) get a **T3** button; this machine's own
+T3 server gets one in the panel header. Clicking it runs
+`t3 pair --tailscale --ttl 1h --label <this hostname>` on the host over ssh
+and copies just the Pairing URL (`https://<host>…/pair#token=…`) to the
+clipboard, with a notification. Paste it on the phone or laptop to pair.
+
+To pair a phone, **right-click T3** (or "Show T3 pairing QR" in the actions
+menu, or `q`): the same link is shown as a QR code to scan with the camera.
+Esc or a click outside closes it. The QR is drawn in memory with `qrencode`
+(`sudo pacman -S qrencode` if it's missing) and nothing is copied.
+
+To let agents on this machine work on the host (server to server, like T3's
+"link a machine"), use **Link to T3 here ›** in the actions menu and pick the
+access level (full access is preselected). blussh mints the code on the host
+and runs `t3 environment link https://<host> --pairing-code … --access …`
+here; the link shows up in both machines' Settings → Connections. It needs
+T3 running on this machine too. The T3 app's own link card won't take a
+`t3 pair` link (it wants a different kind of code); this does the same job.
+
+- Detection probes each Tailscale host's Serve URL once and remembers the
+  answer, like the SSH check. Wrong guess? "Show/Hide T3 pairing" in the
+  actions menu, or `blussh set ts:<name> t3 true|false`.
+- `t3` doesn't need to be on the remote's non-interactive PATH: blussh also
+  tries `~/.local/bin/t3`, the active T3 runtime under `~/.t3/runtime`, and
+  `npx -y t3`.
+- The token stays out of logs, `state.json` and notifications, and is copied
+  with `wl-copy --sensitive` so Omarchy's clipboard history skips it.
+- From a terminal: `blussh t3-pair --target brak --dns brak.<tailnet>.ts.net`
+  (prints only a status line).
+
+### Monitor
+
+"Monitor" in the actions menu (or `t`) opens a terminal with
+`ssh -t <host> btop`, falling back to `htop` and then `top` when the host
+doesn't have it. SSH hosts only.
 
 ### Hiding hosts
 
@@ -92,16 +135,17 @@ checks (5 s) → debounce (2 consecutive readings) → notify via
 `blussh.py check` every refresh interval and renders the JSON it prints.
 
 Since each run is a fresh process, all state lives in
-`~/.local/state/blussh/state.json`: per-host `enabled` and `isSSH` overrides,
+`~/.local/state/blussh/state.json`: per-host `enabled`, `isSSH` and `isT3` overrides,
 debounce `confirmed` states and pending `streaks`, keyed by the same host ids
 as macOS (`ssh:<alias>`, `ts:<name>`, `zt:<nwid>:<nodeId>`).
 
 ```bash
 blussh check --no-notify        # print status JSON without notifying
 blussh set ts:zorak enabled false
-python3 omarchy/test_blussh.py  # parser, merge, liveness and debounce tests
+python3 omarchy/test_blussh.py  # parser, merge, liveness, debounce, T3 and monitor tests
 ```
 
 Differences from macOS: Mullvad exit nodes are left out of the Tailscale
-group, and sources that aren't installed are only reported when you pick them
-explicitly in the settings.
+group, sources that aren't installed are only reported when you pick them
+explicitly in the settings, and the T3 pairing and monitor actions are
+Omarchy-only for now.

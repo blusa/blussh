@@ -35,6 +35,9 @@ It comes in two native versions sharing the same behavior
   before notifying — no alerts from a single dropped probe.
 - Groups with online counters, hide hosts you don't care about, click to copy
   the ssh command, and `HOSTNAME ●` with an aggregate status dot in the bar.
+- **Omarchy only, for now:** one-click T3 Code pairing
+  links for tailnet hosts running a T3 server, and a per-host monitor
+  (`btop`/`htop`/`top` over ssh).
 
 ## Install
 

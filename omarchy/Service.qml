@@ -21,7 +21,13 @@ Item {
   property double updated: 0
   property string actionStatus: ""
   property string lastError: ""
+  property var me: null             // this machine (Tailscale Self), only for T3 pairing
+  property string pairingHostId: ""
+  // { name, message, svg } while the pairing QR popup is up; cleared on close
+  // so the link (inside the QR) doesn't outlive it
+  property var pairingQr: null
   readonly property bool busy: checkProcess.running
+  readonly property bool pairing: pairProcess.running
 
   readonly property string scriptPath: decodeURIComponent(String(Qt.resolvedUrl("blussh.py")).replace(/^file:\/\//, ""))
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 5, 3600)
@@ -40,6 +46,8 @@ Item {
   property bool _refreshAgain: false
   property string _output: ""
   property string _error: ""
+  property string _pairingName: ""
+  property string _pairOutput: ""
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -93,6 +101,7 @@ Item {
     _overrides = overrides
     hosts = next
     errors = data.errors || []
+    me = data.self || null
     hostname = String(data.hostname || "")
     status = String(data.status || "none")
     online = data.online || 0
@@ -123,6 +132,45 @@ Item {
   function openSsh(host) {
     if (!host || host.placeholder) return
     Quickshell.execDetached(["setsid", "uwsm-app", "--", "xdg-terminal-exec", "ssh", sshTarget(host)])
+  }
+
+  // Opens the host's best resource monitor (btop, else htop, else top) over ssh
+  function openMonitor(host) {
+    if (!host || host.placeholder || !host.monitorCommand) return
+    Quickshell.execDetached(["setsid", "uwsm-app", "--", "xdg-terminal-exec"].concat(host.monitorCommand))
+  }
+
+  // The backend mints the link over ssh and copies it itself: the pairing
+  // token never reaches QML, the shell's logs or a saved stderr.
+  // Server to server: link the host's T3 to this machine's (t3 environment link)
+  function t3Link(host, access) {
+    t3Pair(host, false, access)
+  }
+
+  function t3Pair(host, asQr, linkAccess) {
+    if (!host || host.placeholder || !host.isT3 || !host.magicDNS) return
+    if (pairProcess.running) { flash("Already minting a T3 pairing link…"); return }
+    var local = host.isSelf === true
+    if (!local && !host.isSSHServer) { flash("T3 pairing needs SSH access to " + host.name); return }
+    var command = ["python3", scriptPath, "t3-pair", "--notify", "--dns", host.magicDNS, "--name", host.name]
+    if (!local) command.push("--target", sshTarget(host))
+    if (asQr) command.push("--qr")
+    if (linkAccess) command.push("--link", linkAccess)
+    pairingHostId = host.id
+    _pairingName = host.name
+    actionStatusTimer.stop()
+    actionStatus = linkAccess ? "Linking " + host.name + " to T3 here (" + linkAccess + ")…"
+                              : "Minting T3 pairing " + (asQr ? "QR" : "link") + " for " + host.name + "…"
+    _pairOutput = ""
+    pairProcess.command = command
+    pairProcess.running = true
+  }
+
+  function clearQr() { pairingQr = null }
+
+  function setIsT3(host, isT3) {
+    setOverride(host, "isT3", "t3", isT3)
+    flash((isT3 ? "T3 pairing on for " : "T3 pairing off for ") + host.name)
   }
 
   function setOverride(host, field, cliField, value) {
@@ -191,6 +239,27 @@ Item {
     id: actionStatusTimer
     interval: 2200
     onTriggered: root.actionStatus = ""
+  }
+
+  Process {
+    id: pairProcess
+    running: false
+    command: []
+    // Read into our own buffer and drop it once parsed: a StdioCollector
+    // would keep the QR (the pairing link) in memory after the popup closes
+    stdout: SplitParser { onRead: function(line) { root._pairOutput += line } }
+    onExited: function(exitCode) {
+      var result = {}
+      try { result = JSON.parse(root._pairOutput.trim()) } catch (e) {}
+      root._pairOutput = ""
+      root.pairingHostId = ""
+      if (result.ok && result.qrSvg) {
+        root.actionStatus = ""
+        root.pairingQr = { name: root._pairingName, message: String(result.message || ""), svg: String(result.qrSvg) }
+      } else {
+        root.flash(result.message || ("T3 pairing failed (exit " + exitCode + ")"))
+      }
+    }
   }
 
   Process {
