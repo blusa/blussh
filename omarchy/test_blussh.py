@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -137,6 +138,21 @@ class T3DetectionTests(unittest.TestCase):
         hosts, me = blussh.parse_tailscale_status(status)
         self.assertEqual({h["name"]: h["magicDNS"] for h in hosts}, {"brak": "brak.tail.ts.net", "box": None})
         self.assertEqual((me["id"], me["magicDNS"]), ("ts:dexter", "dexter.tail.ts.net"))
+
+
+class RunGroupTests(unittest.TestCase):
+    def test_timeout_kills_the_whole_process_group(self):
+        # Like ssh with a ProxyCommand: the child's own children must die too
+        marker = f"blussh-test-{os.getpid()}"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            blussh.run_group(["bash", "-c", f"exec -a {marker} sleep 30 & wait"], timeout=1)
+        time.sleep(0.3)
+        left = subprocess.run(["pgrep", "-f", f"^{marker}"], capture_output=True, text=True).stdout.split()
+        self.assertEqual(left, [])
+
+    def test_returns_output(self):
+        out = blussh.run_group(["bash", "-c", "echo hi; echo err >&2; exit 3"], timeout=5)
+        self.assertEqual((out.returncode, out.stdout, out.stderr), (3, "hi\n", "err\n"))
 
 
 class T3ProbeTargetTests(unittest.TestCase):

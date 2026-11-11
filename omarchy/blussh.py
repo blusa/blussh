@@ -491,7 +491,25 @@ def render_qr(text):
     return svg
 
 
-def mint_pairing_url(target, magic_dns, label, run=subprocess.run):
+def run_group(cmd, timeout=None, **_ignored):
+    """subprocess.run for ssh and t3: on timeout or cancel (SIGTERM → SystemExit)
+    kill the whole process group, not just the child. ssh leaves its
+    ProxyCommand/ProxyJump processes behind otherwise."""
+    with subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, start_new_session=True) as proc:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except BaseException:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.wait()
+            raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def mint_pairing_url(target, magic_dns, label, run=run_group):
     """Run `t3 pair` on `target` (ssh destination, None = this machine).
 
     Returns (url, None) or (None, error message). The output, token included,
@@ -523,7 +541,7 @@ def last_line(out):
     return lines[-1].strip()[:200] if lines else f"exit {out.returncode}"
 
 
-def t3_pair(target, magic_dns, label, run=subprocess.run, copy=copy_sensitive, qr=False, render_qr=render_qr,
+def t3_pair(target, magic_dns, label, run=run_group, copy=copy_sensitive, qr=False, render_qr=render_qr,
             code_only=False):
     """Mint a T3 pairing link on `target` (ssh destination, None = this machine)
     and copy it, or with `qr` return it as a QR code SVG instead. The result
@@ -575,7 +593,7 @@ def find_local_t3():
     return None
 
 
-def t3_link(target, magic_dns, label, access, run=subprocess.run, local_t3=None):
+def t3_link(target, magic_dns, label, access, run=run_group, local_t3=None):
     """Link the host's T3 Code server to this machine's, so agents here can work
     there (server to server): mint a pairing code on the host over ssh and
     redeem it here with `t3 environment link`. Never returns the token."""
@@ -859,7 +877,7 @@ def cmd_set(args):
 def cmd_t3_pair(args):
     """Used by the panel: copies the link itself, prints JSON without the token."""
     # The panel cancels a slow run by terminating us: make that an exception so
-    # subprocess.run kills the ssh/t3 child instead of leaving it behind
+    # run_group kills the ssh/t3 process group instead of leaving it behind
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     label = args.label or socket.gethostname().split(".")[0]
     if args.link:
