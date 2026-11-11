@@ -47,6 +47,7 @@ Item {
   property string _output: ""
   property string _error: ""
   property string _pairingName: ""
+  property string _pairOutput: ""
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -153,6 +154,7 @@ Item {
     _pairingName = host.name
     actionStatusTimer.stop()
     actionStatus = "Minting T3 pairing " + (asQr ? "QR" : "link") + " for " + host.name + "…"
+    _pairOutput = ""
     pairProcess.command = command
     pairProcess.running = true
   }
@@ -236,10 +238,13 @@ Item {
     id: pairProcess
     running: false
     command: []
-    stdout: StdioCollector { id: pairStdout; waitForEnd: true }
+    // Read into our own buffer and drop it once parsed: a StdioCollector
+    // would keep the QR (the pairing link) in memory after the popup closes
+    stdout: SplitParser { onRead: function(line) { root._pairOutput += line } }
     onExited: function(exitCode) {
       var result = {}
-      try { result = JSON.parse(String(pairStdout.text || "").trim()) } catch (e) {}
+      try { result = JSON.parse(root._pairOutput.trim()) } catch (e) {}
+      root._pairOutput = ""
       root.pairingHostId = ""
       if (result.ok && result.qrSvg) {
         root.actionStatus = ""
