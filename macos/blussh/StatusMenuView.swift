@@ -68,6 +68,15 @@ struct StatusMenuView: View {
                     .lineLimit(2)
             }
 
+            if actions.busyHostId != nil {
+                // Esc cancels a running mint (instead of closing the popover)
+                Button("Cancel") { actions.cancel() }
+                    .keyboardShortcut(.cancelAction)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+            }
+
             Divider()
 
             HStack {
@@ -250,16 +259,23 @@ struct StatusMenuView: View {
 
     @ViewBuilder
     private func t3MenuItems(_ host: MonitoredHost) -> some View {
-        Button("Copy T3 pairing link") { actions.copyPairingLink(for: host) }
-        Button("Show T3 pairing QR") { actions.showPairingQR(for: host) }
+        Group {
+            Button("Copy T3 pairing link") { actions.copyPairingLink(for: host) }
+            Button("Show T3 pairing QR") { actions.showPairingQR(for: host) }
+            // Also where this Mac only runs the T3 client: it carries the code to another machine
+            Button("Copy T3 pairing code") { actions.copyPairingCode(for: host) }
+        }
+        .disabled(!HostActions.canPair(host) || actions.busyHostId != nil)
     }
 
     /// "T3" button: click copies a pairing link for the host's T3 Code server,
-    /// right-click offers the QR. Dims while a link is being minted.
+    /// right-click offers the QR. Dims while a link is being minted; clicking it
+    /// again (or esc) cancels, so it stays enabled even if the host drops off.
     private func t3Button(_ host: MonitoredHost, help: String) -> some View {
         let minting = actions.busyHostId == host.id
+        let reachable = HostActions.canPair(host)
         return Button {
-            actions.copyPairingLink(for: host)
+            actions.t3ButtonClicked(host)
         } label: {
             Text("T3")
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -270,8 +286,8 @@ struct StatusMenuView: View {
                 .opacity(minting ? 0.4 : 1)
         }
         .buttonStyle(.borderless)
-        .disabled(actions.busyHostId != nil)
-        .help(minting ? "Minting pairing link…" : help)
+        .disabled(!minting && (!reachable || actions.busyHostId != nil))
+        .help(minting ? "Minting pairing link… click or esc to cancel" : (reachable ? help : "Host is offline"))
         .contextMenu { t3MenuItems(host) }
     }
 
