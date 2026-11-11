@@ -94,4 +94,4 @@ enable toggle in SettingsView (defaults key `<name>SourceEnabled`).
 - **Bundle ID**: `cloud.blusa.blussh`
 - **Minimum macOS**: 15.3 (some features support back to 12.0)
 - **Swift Version**: 5.0
-- **Development Team**: VMGQ6AAMB5KEEP READING at CLAUDE-ARCHON.md
+- **Development Team**: VMGQ6AAMB5
