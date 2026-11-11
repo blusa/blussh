@@ -539,7 +539,9 @@ Panel {
           focus: true
           Keys.priority: Keys.BeforeItem
           Keys.onPressed: function(event) {
-            if ((event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") && actionMenu.mode !== "") {
+            if (event.key === Qt.Key_Escape && blussh.pairing) {
+              blussh.cancelPairing()
+            } else if ((event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") && actionMenu.mode !== "") {
               actionMenu.mode = ""
               actionMenu.index = 0
             } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") {
@@ -820,7 +822,7 @@ Panel {
     foreground: root.foreground
     fontFamily: root.fontFamily
     // Stays clickable while minting so a second click cancels
-    enabled: reachable && (!blussh.pairing || minting)
+    enabled: minting || (reachable && !blussh.pairing)
     opacity: minting ? 0.45 : 1.0
     onClicked: blussh.t3Pair(host)
 
