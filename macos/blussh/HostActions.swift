@@ -17,6 +17,10 @@ final class HostActions: ObservableObject {
     private var qrWindow: NSWindow?
     private var qrDelegate: QRWindowDelegate?
     private var statusClear: DispatchWorkItem?
+    /// The running T3 action, so it can be cancelled (which kills its ssh)
+    private var task: Task<Void, Never>?
+    /// Runs the mint/link processes; swapped for a fake in the smoke harness
+    var run: T3.Runner = runProcess
 
     init(notifier: NotificationManager) {
         self.notifier = notifier
@@ -24,15 +28,30 @@ final class HostActions: ObservableObject {
 
     // MARK: - T3
 
-    /// Linking needs ssh to the host and a T3 server on this Mac to link it to.
+    /// Minting runs over ssh, so the host must be up (this Mac always is).
+    static func canPair(_ host: MonitoredHost) -> Bool {
+        host.isT3 && !host.isPlaceholder && (host.isSelf || host.netOnline != false)
+    }
+
+    /// Linking also needs a T3 server on this Mac to link the host to.
     func canLink(_ host: MonitoredHost, selfHost: MonitoredHost?) -> Bool {
-        host.isT3 && host.isSSHServer && !host.isSelf && selfHost?.isT3 == true
+        Self.canPair(host) && host.isSSHServer && !host.isSelf && selfHost?.isT3 == true
+    }
+
+    /// The T3 button: copies a pairing link, or cancels the mint already running for this host.
+    func t3ButtonClicked(_ host: MonitoredHost) {
+        if busyHostId == host.id { cancel() } else { copyPairingLink(for: host) }
+    }
+
+    /// Stops the running T3 action; its ssh/bash process (and children) are killed.
+    func cancel() {
+        task?.cancel()
     }
 
     func copyPairingLink(for host: MonitoredHost) {
         guard let magic = startT3(host, progress: "Minting T3 pairing link for \(host.name)…") else { return }
-        Task {
-            let result = await T3.mintPairingURL(target: target(host), magicDNS: magic, label: T3.localShortHostname())
+        task = Task {
+            let result = await T3.mintPairingURL(target: target(host), magicDNS: magic, label: T3.localShortHostname(), run: run)
             switch result {
             case .success(let url):
                 Self.copySensitive(url)
@@ -40,16 +59,35 @@ final class HostActions: ObservableObject {
                 notifier.notifyAction(title: "T3 pairing link for \(host.name) copied",
                                       body: "Paste it on the device to pair · expires in \(T3.pairTTL)", failed: false)
             case .failure(let error):
-                finish(error.message)
-                notifier.notifyAction(title: "T3 pairing with \(host.name) failed", body: error.message, failed: true)
+                fail(error, title: "T3 pairing with \(host.name) failed")
+            }
+        }
+    }
+
+    /// Copies just the pairing code, for `t3 environment link` on another
+    /// machine: offered even where this Mac runs only the T3 client, so it can
+    /// carry the code to another machine's prompt.
+    func copyPairingCode(for host: MonitoredHost) {
+        guard let magic = startT3(host, progress: "Minting T3 pairing code for \(host.name)…") else { return }
+        task = Task {
+            let result = await T3.mintPairingCode(target: target(host), magicDNS: magic, label: T3.localShortHostname(), run: run)
+            switch result {
+            case .success(let code):
+                Self.copySensitive(code)
+                finish("Pairing code for \(magic) copied · expires in \(T3.pairTTL)")
+                notifier.notifyAction(title: "T3 pairing code for \(host.name) copied",
+                                      body: "For t3 environment link on another machine · expires in \(T3.pairTTL)",
+                                      failed: false)
+            case .failure(let error):
+                fail(error, title: "T3 pairing with \(host.name) failed")
             }
         }
     }
 
     func showPairingQR(for host: MonitoredHost) {
         guard let magic = startT3(host, progress: "Minting T3 pairing QR for \(host.name)…") else { return }
-        Task {
-            let result = await T3.mintPairingURL(target: target(host), magicDNS: magic, label: T3.localShortHostname())
+        task = Task {
+            let result = await T3.mintPairingURL(target: target(host), magicDNS: magic, label: T3.localShortHostname(), run: run)
             switch result {
             case .success(let url):
                 guard let image = QRCode.image(for: url) else {
@@ -62,25 +100,23 @@ final class HostActions: ObservableObject {
                 presentQR(image, name: host.name,
                           message: "Scan to pair with \(magic) · expires in \(T3.pairTTL)")
             case .failure(let error):
-                finish(error.message)
-                notifier.notifyAction(title: "T3 pairing with \(host.name) failed", body: error.message, failed: true)
+                fail(error, title: "T3 pairing with \(host.name) failed")
             }
         }
     }
 
     func link(_ host: MonitoredHost, access: String) {
         guard let magic = startT3(host, progress: "Linking \(host.name) to T3 here (\(access))…") else { return }
-        Task {
+        task = Task {
             let result = await T3.link(target: target(host), magicDNS: magic, label: T3.localShortHostname(),
-                                       access: access)
+                                       access: access, run: run)
             switch result {
             case .success(let message):
                 finish(message)
                 notifier.notifyAction(title: "Linked \(host.name) to T3 here",
                                       body: "Agents here can now work on \(host.name) (\(access))", failed: false)
             case .failure(let error):
-                finish(error.message)
-                notifier.notifyAction(title: "Linking \(host.name) to T3 failed", body: error.message, failed: true)
+                fail(error, title: "Linking \(host.name) to T3 failed")
             }
         }
     }
@@ -89,7 +125,11 @@ final class HostActions: ObservableObject {
     private func startT3(_ host: MonitoredHost, progress: String) -> String? {
         guard host.isT3, let magic = host.magicDNS, !host.isPlaceholder else { return nil }
         guard busyHostId == nil else {
-            flash("Already minting a T3 pairing link…")
+            flash("Already minting a T3 pairing link… (esc cancels)")
+            return nil
+        }
+        guard Self.canPair(host) else {
+            flash("\(host.name) is offline")
             return nil
         }
         guard host.isSelf || host.isSSHServer else {
@@ -103,7 +143,14 @@ final class HostActions: ObservableObject {
 
     private func finish(_ message: String?) {
         busyHostId = nil
+        task = nil
         if let message = message { flash(message) } else { setStatus(nil, clearAfter: nil) }
+    }
+
+    /// A cancelled run just says so; a failure is notified too.
+    private func fail(_ error: T3Error, title: String) {
+        finish(error.message)
+        if !error.isCancelled { notifier.notifyAction(title: title, body: error.message, failed: true) }
     }
 
     /// ssh destination, or nil to run on this Mac.

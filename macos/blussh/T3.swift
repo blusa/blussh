@@ -8,7 +8,10 @@ import Foundation
 /// it, and every error message is built from redacted output.
 enum T3 {
     static let probeTimeout: TimeInterval = 5
-    static let pairTimeout: TimeInterval = 150   // npx may have to download t3 first
+    // Whole `t3 pair` run over ssh. A wedged host or T3 server must not hold the
+    // popover for minutes; the one slow case is a first `npx -y t3` download, which
+    // reports a timeout and works on the next try once npx has cached it.
+    static let pairTimeout: TimeInterval = 60
     static let pairTTL = "1h"
 
     // What the T3 Code web client serves at `/`. Every path answers with the same
@@ -157,8 +160,9 @@ enum T3 {
     static func pairCommand(target: String?, label: String) -> [String] {
         let script = pairScript(label: label)
         if let target = target {
-            return ["/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target,
-                    "bash -lc " + shellQuote(script)]
+            // ServerAlive*: give up on a host that drops off mid-run in ~10 s
+            return ["/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=5",
+                    "-o", "ServerAliveCountMax=2", target, "bash -lc " + shellQuote(script)]
         }
         return ["/bin/bash", "-lc", script]
     }
@@ -175,7 +179,9 @@ enum T3 {
         do {
             result = try await run(command, pairTimeout)
         } catch ProcessRunError.timedOut {
-            return .failure(T3Error("t3 pair on \(place) timed out"))
+            return .failure(T3Error("t3 pair on \(place) timed out after \(Int(pairTimeout)) s"))
+        } catch is CancellationError {
+            return .failure(.cancelled)
         } catch {
             return .failure(T3Error("can't run \((command[0] as NSString).lastPathComponent): \(error.localizedDescription)"))
         }
@@ -183,6 +189,20 @@ enum T3 {
             return .failure(T3Error("no pairing link from \(place): \(lastLine(result))"))
         }
         return .success(url)
+    }
+
+    /// Mint as for the link, but return just the pairing code, to hand to another
+    /// machine (`t3 environment link … --pairing-code`). Only lives in memory.
+    static func mintPairingCode(target: String?, magicDNS: String?, label: String,
+                                run: Runner = runProcess) async -> Result<String, T3Error> {
+        switch await mintPairingURL(target: target, magicDNS: magicDNS, label: label, run: run) {
+        case .failure(let error): return .failure(error)
+        case .success(let url):
+            guard let code = pairingCode(fromURL: url) else {
+                return .failure(T3Error("no pairing code in the link from \(target ?? "this machine")"))
+            }
+            return .success(code)
+        }
     }
 
     // MARK: - Server to server link
@@ -246,6 +266,8 @@ enum T3 {
             }
         } catch ProcessRunError.timedOut {
             return .failure(T3Error("t3 environment link timed out"))
+        } catch is CancellationError {
+            return .failure(.cancelled)
         } catch {
             return .failure(T3Error("can't run t3: \(error.localizedDescription)"))
         }
@@ -294,7 +316,15 @@ enum T3 {
 
 struct T3Error: Error {
     let message: String
+    /// The user cancelled the run (not a failure worth a notification)
+    var isCancelled = false
     init(_ message: String) { self.message = message }
+
+    static var cancelled: T3Error {
+        var error = T3Error("Cancelled")
+        error.isCancelled = true
+        return error
+    }
 }
 
 // MARK: - Processes
@@ -310,8 +340,9 @@ enum ProcessRunError: Error {
 }
 
 /// Runs `command` (absolute executable first) with stdin closed, collecting
-/// output in memory. Kills it after `timeout`. PATH gets Homebrew and
-/// ~/.local/bin, which processes started by a GUI app otherwise lack.
+/// output in memory. Kills it after `timeout`, or when the calling task is
+/// cancelled (throwing `CancellationError`), children included. PATH gets
+/// Homebrew and ~/.local/bin, which processes started by a GUI app otherwise lack.
 func runProcess(_ command: [String], timeout: TimeInterval) async throws -> ProcessResult {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: command[0])
@@ -324,50 +355,86 @@ func runProcess(_ command: [String], timeout: TimeInterval) async throws -> Proc
     process.standardOutput = stdout
     process.standardError = stderr
 
-    return try await withCheckedThrowingContinuation { continuation in
-        let group = DispatchGroup()
-        var out = Data(), err = Data()
-        let lock = NSLock()
-        var timedOut = false
-
-        do {
-            try process.run()
-        } catch {
-            continuation.resume(throwing: error)
-            return
-        }
-        // Drain both pipes concurrently so a chatty process can't fill one and block
-        for (pipe, isOut) in [(stdout, true), (stderr, false)] {
-            group.enter()
-            DispatchQueue.global().async {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                lock.lock()
-                if isOut { out = data } else { err = data }
-                lock.unlock()
-                group.leave()
-            }
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-            if process.isRunning {
-                lock.lock(); timedOut = true; lock.unlock()
-                process.terminate()
-            }
-        }
-        DispatchQueue.global().async {
-            process.waitUntilExit()
-            // A killed process's children may still hold the pipes open; don't wait on them forever
-            _ = group.wait(timeout: .now() + 2)
-            lock.lock(); let didTimeOut = timedOut; lock.unlock()
-            if didTimeOut {
-                continuation.resume(throwing: ProcessRunError.timedOut)
-            } else {
-                lock.lock()
-                let result = ProcessResult(status: process.terminationStatus,
-                                           stdout: String(decoding: out, as: UTF8.self),
-                                           stderr: String(decoding: err, as: UTF8.self))
-                lock.unlock()
-                continuation.resume(returning: result)
-            }
-        }
+    let lock = NSLock()
+    var stop: ProcessStop?
+    /// Records why the process is being stopped (first reason wins) and kills it
+    func stopProcess(_ reason: ProcessStop) {
+        lock.lock()
+        if stop == nil { stop = reason }
+        lock.unlock()
+        if process.isRunning { terminateTree(process.processIdentifier) }
     }
+
+    return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+            let group = DispatchGroup()
+            var out = Data(), err = Data()
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+                return
+            }
+            // Cancelled before the process started: the handler found nothing to kill
+            if Task.isCancelled { stopProcess(.cancelled) }
+            // Drain both pipes concurrently so a chatty process can't fill one and block
+            for (pipe, isOut) in [(stdout, true), (stderr, false)] {
+                group.enter()
+                DispatchQueue.global().async {
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    lock.lock()
+                    if isOut { out = data } else { err = data }
+                    lock.unlock()
+                    group.leave()
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                if process.isRunning { stopProcess(.timedOut) }
+            }
+            DispatchQueue.global().async {
+                process.waitUntilExit()
+                // A killed process's children may still hold the pipes open; don't wait on them forever
+                _ = group.wait(timeout: .now() + 2)
+                lock.lock(); let reason = stop; lock.unlock()
+                switch reason {
+                case .timedOut: continuation.resume(throwing: ProcessRunError.timedOut)
+                case .cancelled: continuation.resume(throwing: CancellationError())
+                case nil:
+                    lock.lock()
+                    let result = ProcessResult(status: process.terminationStatus,
+                                               stdout: String(decoding: out, as: UTF8.self),
+                                               stderr: String(decoding: err, as: UTF8.self))
+                    lock.unlock()
+                    continuation.resume(returning: result)
+                }
+            }
+        }
+    } onCancel: {
+        stopProcess(.cancelled)
+    }
+}
+
+private enum ProcessStop {
+    case timedOut, cancelled
+}
+
+/// SIGTERM `pid` and all its descendants, collected before anything dies (an
+/// orphan is reparented to launchd and can't be found from here any more).
+/// `bash -lc` runs t3/npx as children, and ssh may run a ProxyCommand.
+func terminateTree(_ pid: pid_t) {
+    var pids = [pid]
+    var index = 0
+    while index < pids.count {
+        let parent = pids[index]
+        index += 1
+        let count = proc_listchildpids(parent, nil, 0)
+        guard count > 0 else { continue }
+        var children = [pid_t](repeating: 0, count: Int(count) + 8)
+        let found = proc_listchildpids(parent, &children, Int32(children.count * MemoryLayout<pid_t>.size))
+        // Returns the number of pids (newer macOS) or bytes; either way the tail is zeros
+        pids += children.prefix(Int(max(found, 0))).filter { $0 > 0 && !pids.contains($0) }
+    }
+    // Children first, so a parent can't respawn or report before they're gone
+    for child in pids.reversed() { kill(child, SIGTERM) }
 }
