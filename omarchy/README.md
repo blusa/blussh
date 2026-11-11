@@ -79,6 +79,14 @@ menu, or `q`): the same link is shown as a QR code to scan with the camera.
 Esc or a click outside closes it. The QR is drawn in memory with `qrencode`
 (`sudo pacman -S qrencode` if it's missing) and nothing is copied.
 
+To let agents on this machine work on the host (server to server, like T3's
+"link a machine"), use **Link to T3 here ›** in the actions menu and pick the
+access level (full access is preselected). blussh mints the code on the host
+and runs `t3 environment link https://<host> --pairing-code … --access …`
+here; the link shows up in both machines' Settings → Connections. It needs
+T3 running on this machine too. The T3 app's own link card won't take a
+`t3 pair` link (it wants a different kind of code); this does the same job.
+
 - Detection probes each Tailscale host's Serve URL once and remembers the
   answer, like the SSH check. Wrong guess? "Show/Hide T3 pairing" in the
   actions menu, or `blussh set ts:<name> t3 true|false`.

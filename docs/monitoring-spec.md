@@ -206,6 +206,13 @@ Tailscale Serve at `https://<name>.<MagicDNSSuffix>/`. For each Tailscale host
   memory (Omarchy: `qrencode -t SVG --svg-path` fed on stdin; macOS:
   `CIQRCodeGenerator`), never to a file. Omarchy: right-click the T3 button,
   the actions menu, or `q`.
+- **Server-to-server link** (agents here work on the host): mint the same
+  code, then run locally `t3 environment link https://<magicdns>
+  --pairing-code <token> --access <level>` (levels: read-only,
+  approval-required, auto-accept-edits, auto, full-access; full-access is the
+  default choice). Only offered when this machine runs T3 too. Note: T3's own
+  MCP link card does *not* accept a `t3 pair` code (it expects an
+  `mcp-approval:` code and fails with "pairing code is unknown"); the CLI does.
 - **Token hygiene**: the pairing output is held in memory only. The token is
   never printed, logged, persisted, or put in a notification; error messages
   are built from redacted output (`token=`, `token%3D`, `Token:`).

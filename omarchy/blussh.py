@@ -487,10 +487,12 @@ def render_qr(text):
     return svg
 
 
-def t3_pair(target, magic_dns, label, run=subprocess.run, copy=copy_sensitive, qr=False, render_qr=render_qr):
-    """Mint a T3 pairing link on `target` (ssh destination, None = this machine)
-    and copy it, or with `qr` return it as a QR code SVG instead. The result
-    never contains the token as text: callers print it."""
+def mint_pairing_url(target, magic_dns, label, run=subprocess.run):
+    """Run `t3 pair` on `target` (ssh destination, None = this machine).
+
+    Returns (url, None) or (None, error message). The output, token included,
+    only ever lives in memory here.
+    """
     script = t3_pair_script(label)
     if target:
         cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target, "bash -lc " + shlex.quote(script)]
@@ -500,27 +502,91 @@ def t3_pair(target, magic_dns, label, run=subprocess.run, copy=copy_sensitive, q
     try:
         out = run(cmd, capture_output=True, text=True, timeout=T3_PAIR_TIMEOUT, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "message": f"t3 pair on {where} timed out"}
+        return None, f"t3 pair on {where} timed out"
     except OSError as e:
-        return {"ok": False, "message": f"can't run {cmd[0]}: {e.strerror or e}"}
-
+        return None, f"can't run {cmd[0]}: {e.strerror or e}"
     url = extract_pairing_url(out.stdout, magic_dns)
     if not url:
-        lines = [l for l in redact(ANSI.sub("", (out.stderr or "") + (out.stdout or ""))).splitlines() if l.strip()]
-        reason = lines[-1].strip()[:200] if lines else f"exit {out.returncode}"
-        return {"ok": False, "message": f"no pairing link from {where}: {reason}"}
+        return None, f"no pairing link from {where}: {last_line(out)}"
+    return url, None
+
+
+def last_line(out):
+    """Last non-empty line of a process's output, redacted, for error messages."""
+    lines = [l for l in redact(ANSI.sub("", (out.stderr or "") + (out.stdout or ""))).splitlines() if l.strip()]
+    return lines[-1].strip()[:200] if lines else f"exit {out.returncode}"
+
+
+def t3_pair(target, magic_dns, label, run=subprocess.run, copy=copy_sensitive, qr=False, render_qr=render_qr):
+    """Mint a T3 pairing link on `target` (ssh destination, None = this machine)
+    and copy it, or with `qr` return it as a QR code SVG instead. The result
+    never contains the token as text: callers print it."""
+    url, error = mint_pairing_url(target, magic_dns, label, run)
+    if error:
+        return {"ok": False, "message": error}
+    where = magic_dns or target or "this machine"
     if qr:
         try:
             svg = render_qr(url)
         except (SourceError, OSError, subprocess.SubprocessError) as e:
             return {"ok": False, "message": f"couldn't draw the pairing QR: {e}"}
-        return {"ok": True, "message": f"Scan to pair with {magic_dns or where} · expires in {T3_PAIR_TTL}",
-                "qrSvg": svg}
+        return {"ok": True, "message": f"Scan to pair with {where} · expires in {T3_PAIR_TTL}", "qrSvg": svg}
     try:
         copy(url)
     except (OSError, subprocess.SubprocessError):
         return {"ok": False, "message": "couldn't copy the pairing link (wl-copy failed)"}
-    return {"ok": True, "message": f"Pairing link for {magic_dns or where} copied · expires in {T3_PAIR_TTL}"}
+    return {"ok": True, "message": f"Pairing link for {where} copied · expires in {T3_PAIR_TTL}"}
+
+
+# What a linked environment's agents may do on the host (`t3 environment link --access`)
+T3_LINK_ACCESS = ("read-only", "approval-required", "auto-accept-edits", "auto", "full-access")
+
+
+def find_local_t3():
+    """This machine's t3, looked up like t3_pair_script does on the host."""
+    home = os.path.expanduser("~")
+    found = shutil.which("t3")
+    if found:
+        return found
+    if os.access(os.path.join(home, ".local/bin/t3"), os.X_OK):
+        return os.path.join(home, ".local/bin/t3")
+    try:
+        with open(os.path.join(home, ".t3/runtime/service-state.json")) as f:
+            version = json.load(f).get("activeVersion")
+        binary = os.path.join(home, ".t3/runtime/versions", version, "t3")
+        if os.access(binary, os.X_OK):
+            return binary
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def t3_link(target, magic_dns, label, access, run=subprocess.run, local_t3=None):
+    """Link the host's T3 Code server to this machine's, so agents here can work
+    there (server to server): mint a pairing code on the host over ssh and
+    redeem it here with `t3 environment link`. Never returns the token."""
+    if access not in T3_LINK_ACCESS:
+        return {"ok": False, "message": f"unknown access level {access!r}"}
+    binary = local_t3 or find_local_t3()
+    if not binary:
+        return {"ok": False, "message": "t3 isn't installed on this machine"}
+    url, error = mint_pairing_url(target, magic_dns, label, run)
+    if error:
+        return {"ok": False, "message": error}
+    code = urllib.parse.urlsplit(url).fragment.partition("token=")[2]
+    # The one-time code is in argv for the second or so this takes: t3 has no stdin
+    # option for it, and only this user's processes can read /proc/<pid>/cmdline
+    cmd = [binary, "environment", "link", f"https://{magic_dns}", "--pairing-code", code, "--access", access]
+    try:
+        out = run(cmd, capture_output=True, text=True, timeout=T3_PAIR_TIMEOUT, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": "t3 environment link timed out"}
+    except OSError as e:
+        return {"ok": False, "message": f"can't run t3: {e.strerror or e}"}
+    if out.returncode != 0:
+        out.stdout, out.stderr = (out.stdout or "").replace(code, "<redacted>"), (out.stderr or "").replace(code, "<redacted>")
+        return {"ok": False, "message": f"t3 environment link failed: {last_line(out)}"}
+    return {"ok": True, "message": f"Linked {magic_dns} to T3 here ({access})"}
 
 
 # MARK: - Monitor
@@ -765,11 +831,18 @@ def cmd_set(args):
 def cmd_t3_pair(args):
     """Used by the panel: copies the link itself, prints JSON without the token."""
     label = args.label or socket.gethostname().split(".")[0]
-    result = t3_pair(args.target or None, args.dns, label, qr=args.qr)
+    if args.link:
+        result = t3_link(args.target or None, args.dns, label, args.link)
+    else:
+        result = t3_pair(args.target or None, args.dns, label, qr=args.qr)
     if args.notify:
         name = args.name or (args.dns or "").split(".")[0] or "this machine"
         if result["ok"] and args.qr:
             pass  # the panel shows the QR itself
+        elif result["ok"] and args.link:
+            send_notification(f"Linked {name} to T3 here", f"Agents here can now work on {name} ({args.link})", glyph="󰌹")
+        elif not result["ok"] and args.link:
+            send_notification(f"Linking {name} to T3 failed", result["message"], urgent=True, glyph="󰌺")
         elif result["ok"]:
             send_notification(f"T3 pairing link for {name} copied", f"Paste it on the device to pair · expires in {T3_PAIR_TTL}",
                               glyph="󰌹")
@@ -914,6 +987,8 @@ def main():
     pair.add_argument("--label", help="connection label on the server (default: this machine's hostname)")
     pair.add_argument("--notify", action="store_true", help="send a desktop notification with the result")
     pair.add_argument("--qr", action="store_true", help="don't copy: print the link as a QR code SVG (qrSvg)")
+    pair.add_argument("--link", choices=T3_LINK_ACCESS, metavar="ACCESS",
+                      help="link the host to this machine's T3 (t3 environment link) with this access instead of copying")
     pair.set_defaults(func=cmd_t3_pair)
 
     zta = sub.add_parser("zerotier-authtoken", help="copy ZeroTier's local authtoken so blussh can read it")

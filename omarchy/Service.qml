@@ -142,7 +142,12 @@ Item {
 
   // The backend mints the link over ssh and copies it itself: the pairing
   // token never reaches QML, the shell's logs or a saved stderr.
-  function t3Pair(host, asQr) {
+  // Server to server: link the host's T3 to this machine's (t3 environment link)
+  function t3Link(host, access) {
+    t3Pair(host, false, access)
+  }
+
+  function t3Pair(host, asQr, linkAccess) {
     if (!host || host.placeholder || !host.isT3 || !host.magicDNS) return
     if (pairProcess.running) { flash("Already minting a T3 pairing link…"); return }
     var local = host.isSelf === true
@@ -150,10 +155,12 @@ Item {
     var command = ["python3", scriptPath, "t3-pair", "--notify", "--dns", host.magicDNS, "--name", host.name]
     if (!local) command.push("--target", sshTarget(host))
     if (asQr) command.push("--qr")
+    if (linkAccess) command.push("--link", linkAccess)
     pairingHostId = host.id
     _pairingName = host.name
     actionStatusTimer.stop()
-    actionStatus = "Minting T3 pairing " + (asQr ? "QR" : "link") + " for " + host.name + "…"
+    actionStatus = linkAccess ? "Linking " + host.name + " to T3 here (" + linkAccess + ")…"
+                              : "Minting T3 pairing " + (asQr ? "QR" : "link") + " for " + host.name + "…"
     _pairOutput = ""
     pairProcess.command = command
     pairProcess.running = true

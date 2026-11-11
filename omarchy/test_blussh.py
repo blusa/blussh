@@ -206,6 +206,32 @@ class PairingTests(unittest.TestCase):
         self.assertIn("<svg", svg)
         self.assertNotIn(FAKE_TOKEN, svg)
 
+    def test_link_environment_redeems_the_code_locally(self):
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            out = PAIR_OUTPUT if cmd[0] == "ssh" else "Linked BRAK (8984aa78) with auto access, until 2026-12-11.\n"
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        result = blussh.t3_link("brak", "brak.tail.ts.net", "dexter", "auto", run=run, local_t3="/x/t3")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(calls[1], ["/x/t3", "environment", "link", "https://brak.tail.ts.net",
+                                    "--pairing-code", FAKE_TOKEN, "--access", "auto"])
+        self.assertNotIn(FAKE_TOKEN, json.dumps(result))
+
+    def test_link_environment_failure_never_leaks_the_token(self):
+        def run(cmd, **kwargs):
+            if cmd[0] == "ssh":
+                return subprocess.CompletedProcess(cmd, 0, PAIR_OUTPUT, "")
+            return subprocess.CompletedProcess(cmd, 1, "", f"Error: code {FAKE_TOKEN} is unknown\n")
+        result = blussh.t3_link("brak", "brak.tail.ts.net", "dexter", "auto", run=run, local_t3="/x/t3")
+        self.assertFalse(result["ok"])
+        self.assertNotIn(FAKE_TOKEN, json.dumps(result))
+
+    def test_link_environment_rejects_unknown_access(self):
+        result = blussh.t3_link("brak", "brak.tail.ts.net", "dexter", "root", run=None, local_t3="/x/t3")
+        self.assertFalse(result["ok"])
+
     def test_local_pair_runs_without_ssh(self):
         run, calls = self.fake_run(PAIR_OUTPUT)
         blussh.t3_pair(None, "brak.tail.ts.net", "dexter", run=run, copy=lambda _: None)

@@ -171,8 +171,24 @@ Panel {
     })
   }
 
+  // Linking needs ssh to the host and a T3 server on this machine to link it to
+  function canLinkT3(host) {
+    return !!host && host.isT3 === true && host.isSSHServer === true && host.isSelf !== true
+      && blussh.me !== null && blussh.me.isT3 === true
+  }
+
+  // Access levels for `t3 environment link`; full access first, so it's the default
+  readonly property var linkLevels: [
+    { kind: "link:full-access", label: "Full access", glyph: "󰌷" },
+    { kind: "link:auto", label: "Auto", glyph: "󰌷" },
+    { kind: "link:auto-accept-edits", label: "Auto-accept edits", glyph: "󰌷" },
+    { kind: "link:approval-required", label: "Supervised (approval required)", glyph: "󰌷" },
+    { kind: "link:read-only", label: "Read-only", glyph: "󰌷" }
+  ]
+
   function openActionMenu(host) {
     if (!host || host.placeholder) return
+    actionMenu.mode = ""
     actionMenu.host = host
     actionMenu.index = 0
     actionMenu.open()
@@ -455,12 +471,16 @@ Panel {
         id: actionMenu
         property var host: null
         property int index: 0
+        // "" = host actions, "link" = access levels for "Link to T3 here"
+        property string mode: ""
         readonly property var options: {
           if (!host) return []
+          if (mode === "link") return root.linkLevels
           var list = [{ kind: "copy", label: "Copy " + host.sshCommand, glyph: "󰆏" }]
           if (host.isSSHServer) list.push({ kind: "open", label: "Open ssh session", glyph: "󰆍" })
           if (host.isT3) list.push({ kind: "t3", label: "Copy T3 pairing link", glyph: "󰌹" })
           if (host.isT3) list.push({ kind: "t3qr", label: "Show T3 pairing QR", glyph: "󰐲" })
+          if (root.canLinkT3(host)) list.push({ kind: "t3link", label: "Link to T3 here  ›", glyph: "󰌷" })
           if (host.monitorCommand) list.push({ kind: "top", label: "Monitor (btop · htop · top)", glyph: "󰓅" })
           list.push({ kind: "monitor", label: host.enabled ? "Hide host (stops monitoring)" : "Show and monitor again", glyph: host.enabled ? "󰈉" : "󰈈" })
           if (host.netOnline !== null && host.netOnline !== undefined)
@@ -479,6 +499,8 @@ Panel {
 
         function choose(kind) {
           var h = host
+          if (kind === "t3link") { mode = "link"; index = 0; return }
+          if (kind.indexOf("link:") === 0) { close(); blussh.t3Link(h, kind.slice(5)); return }
           close()
           if (kind === "copy") blussh.copySshCommand(h)
           else if (kind === "open") { blussh.openSsh(h); root.close() }
@@ -507,7 +529,10 @@ Panel {
           focus: true
           Keys.priority: Keys.BeforeItem
           Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") {
+            if ((event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") && actionMenu.mode !== "") {
+              actionMenu.mode = ""
+              actionMenu.index = 0
+            } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Left || event.text === "h") {
               actionMenu.close()
             } else if (event.key === Qt.Key_Down || event.text === "j") {
               actionMenu.index = Math.min(actionMenu.options.length - 1, actionMenu.index + 1)
