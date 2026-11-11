@@ -175,6 +175,9 @@ Tailscale Serve at `https://<name>.<MagicDNSSuffix>/`. For each Tailscale host
   neurus (302 to another app), zorak (TLS alert), hermes (connection refused).
 - **Caching**: like SSH auto-detect, probe once the first time the host is
   seen `netOnline == true`, persist the verdict (`isT3`), user can override.
+  Exception: `Self` is probed every cycle and never persisted (the monitor
+  often starts at login before the T3 service; a saved "no" would hide local
+  pairing and every "Link to T3 here" for good). An override still wins.
   Refused connections, TLS errors and timeouts are a persisted "no"; only a
   DNS resolution failure is retried next cycle.
 - **Action**: over ssh (`ssh -o BatchMode=yes <user@alias>`, the same target
