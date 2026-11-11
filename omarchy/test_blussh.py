@@ -247,6 +247,21 @@ class PairingTests(unittest.TestCase):
         result = blussh.t3_link("brak", "brak.tail.ts.net", "dexter", "root", run=None, local_t3="/x/t3")
         self.assertFalse(result["ok"])
 
+    def test_code_only_copies_the_bare_code(self):
+        run, _ = self.fake_run(PAIR_OUTPUT)
+        copied = []
+        result = blussh.t3_pair("brak", "brak.tail.ts.net", "dexter", run=run, copy=copied.append, code_only=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(copied, [FAKE_TOKEN])
+        self.assertNotIn(FAKE_TOKEN, json.dumps(result))
+
+    def test_ssh_gives_up_on_dead_hosts(self):
+        run, calls = self.fake_run(PAIR_OUTPUT)
+        blussh.t3_pair("brak", "brak.tail.ts.net", "dexter", run=run, copy=lambda _: None)
+        self.assertIn("ConnectTimeout=10", calls[0])
+        self.assertIn("ServerAliveInterval=5", calls[0])
+        self.assertLessEqual(blussh.T3_PAIR_TIMEOUT, 60)
+
     def test_local_pair_runs_without_ssh(self):
         run, calls = self.fake_run(PAIR_OUTPUT)
         blussh.t3_pair(None, "brak.tail.ts.net", "dexter", run=run, copy=lambda _: None)

@@ -79,6 +79,15 @@ menu, or `q`): the same link is shown as a QR code to scan with the camera.
 Esc or a click outside closes it. The QR is drawn in memory with `qrencode`
 (`sudo pacman -S qrencode` if it's missing) and nothing is copied.
 
+**Copy T3 pairing code** (actions menu) copies just the code, for when the
+link has to be made from another machine: paste it into that machine's
+prompt or run `t3 environment link https://<host> --pairing-code <code>`
+there. It works on machines that only run the T3 client, too.
+
+Minting gives up after 60 s (10 s if the host doesn't answer ssh), and T3 is
+greyed out on hosts Tailscale reports offline. Click T3 again, or press Esc,
+to cancel a pairing that's taking too long.
+
 To let agents on this machine work on the host (server to server, like T3's
 "link a machine"), use **Link to T3 here ›** in the actions menu and pick the
 access level (full access is preselected). blussh mints the code on the host
