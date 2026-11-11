@@ -39,14 +39,23 @@ struct TailscaleSource: HostSource {
             return DiscoveryResult(error: SourceError(id: name, message: "unexpected status --json output"))
         }
 
+        return Self.parse(root: root, peers: peers)
+    }
+
+    /// Peers of `tailscale status --json` as hosts, plus this machine as `selfHost`.
+    static func parse(root: [String: Any], peers: [String: [String: Any]]) -> DiscoveryResult {
         let tailnet = (root["CurrentTailnet"] as? [String: Any])?["Name"] as? String
             ?? root["MagicDNSSuffix"] as? String ?? ""
+        let suffix = ((root["MagicDNSSuffix"] as? String) ?? "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
 
-        var hosts: [MonitoredHost] = []
-        for peer in peers.values {
-            guard let hostName = peer["HostName"] as? String else { continue }
-            // Mullvad exit nodes and the like have no MagicDNS name worth showing
-            let dnsName = (peer["DNSName"] as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        func node(_ peer: [String: Any]) -> MonitoredHost? {
+            guard let hostName = peer["HostName"] as? String, !hostName.isEmpty else { return nil }
+            let dnsName = (peer["DNSName"] as? String)?
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                .nilIfEmpty
+            // Mullvad exit nodes would flood the list with hundreds of servers
+            if let dnsName = dnsName, dnsName.hasSuffix(".mullvad.ts.net") { return nil }
             let ips = peer["TailscaleIPs"] as? [String] ?? []
             let address = dnsName ?? ips.first(where: { !$0.contains(":") }) ?? hostName
             let shortName = dnsName?.components(separatedBy: ".").first ?? hostName
@@ -54,17 +63,31 @@ struct TailscaleSource: HostSource {
             var aliases = ips.map { $0.lowercased() } + [shortName.lowercased(), hostName.lowercased()]
             if let dnsName = dnsName { aliases.append(dnsName.lowercased()) }
 
-            hosts.append(MonitoredHost(
+            // Tailscale Serve (where a T3 Code server is published) answers on the MagicDNS name
+            var magic: String?
+            if let dnsName = dnsName?.lowercased(), !suffix.isEmpty, dnsName.hasSuffix("." + suffix) {
+                magic = dnsName
+            }
+
+            var host = MonitoredHost(
                 id: "ts:\(shortName.lowercased())",
                 name: shortName,
                 origin: .tailscale(tailnet: tailnet),
                 address: address,
                 netOnline: peer["Online"] as? Bool ?? false,
                 aliases: aliases
-            ))
+            )
+            host.magicDNS = magic
+            return host
         }
+
+        var hosts = peers.values.compactMap(node)
         hosts.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        return DiscoveryResult(hosts: hosts)
+        var me = (root["Self"] as? [String: Any]).flatMap(node)
+        me?.isSelf = true
+        me?.netOnline = true
+        me?.isEnabled = false
+        return DiscoveryResult(hosts: hosts, selfHost: me)
     }
 
     private func runProcess(_ path: String, arguments: [String]) async throws -> Data {
@@ -96,4 +119,8 @@ struct TailscaleSource: HostSource {
             }
         }
     }
+}
+
+extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

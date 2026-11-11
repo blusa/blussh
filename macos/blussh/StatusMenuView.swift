@@ -1,7 +1,9 @@
+import Combine
 import SwiftUI
 
 struct StatusMenuView: View {
     @ObservedObject var engine: MonitoringEngine
+    @ObservedObject var actions: HostActions
     @State private var lastUpdatedString: String = ""
     @State private var showingSettings = false
     @State private var hoveredHostId: String? = nil
@@ -26,6 +28,9 @@ struct StatusMenuView: View {
                 Text(onlineSummary)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if let me = engine.selfHost, me.isT3 {
+                    t3Button(me, help: "Copy a T3 pairing link for this Mac · right-click for a QR")
+                }
                 Circle()
                     .frame(width: 10, height: 10)
                     .foregroundColor(statusColor(for: engine.globalStatus))
@@ -54,6 +59,13 @@ struct StatusMenuView: View {
                         .foregroundColor(.orange)
                         .lineLimit(2)
                 }
+            }
+
+            if let status = actions.status {
+                Text(status)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
             }
 
             Divider()
@@ -162,6 +174,10 @@ struct StatusMenuView: View {
 
             Spacer()
 
+            if host.isT3 {
+                t3Button(host, help: "Copy T3 pairing link · right-click for a QR")
+            }
+
             if host.isSSHServer {
                 Text("ssh")
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
@@ -202,11 +218,61 @@ struct StatusMenuView: View {
         .contextMenu {
             Button("Copy ssh command") { copyToClipboard(host.sshCommand) }
             Button("Copy address") { copyToClipboard(host.address) }
+            if host.isT3 || host.isSSHServer {
+                Divider()
+            }
+            if host.isT3 {
+                t3MenuItems(host)
+            }
+            if actions.canLink(host, selfHost: engine.selfHost) {
+                Menu("Link to T3 here") {
+                    ForEach(T3.linkAccessLevels, id: \.level) { option in
+                        Button(option.label) { actions.link(host, access: option.level) }
+                    }
+                }
+            }
+            if host.isSSHServer {
+                Button("Monitor (btop · htop · top)") { actions.openMonitor(for: host) }
+            }
+            Divider()
             Toggle("Monitor SSH port", isOn: Binding(
                 get: { host.isSSHServer },
                 set: { engine.setIsSSHServer($0, hostId: host.id) }
             ))
+            if host.magicDNS != nil {
+                Toggle("Offer T3 pairing", isOn: Binding(
+                    get: { host.isT3 },
+                    set: { engine.setIsT3($0, hostId: host.id) }
+                ))
+            }
         }
+    }
+
+    @ViewBuilder
+    private func t3MenuItems(_ host: MonitoredHost) -> some View {
+        Button("Copy T3 pairing link") { actions.copyPairingLink(for: host) }
+        Button("Show T3 pairing QR") { actions.showPairingQR(for: host) }
+    }
+
+    /// "T3" button: click copies a pairing link for the host's T3 Code server,
+    /// right-click offers the QR. Dims while a link is being minted.
+    private func t3Button(_ host: MonitoredHost, help: String) -> some View {
+        let minting = actions.busyHostId == host.id
+        return Button {
+            actions.copyPairingLink(for: host)
+        } label: {
+            Text("T3")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 3).fill(Color.accentColor.opacity(0.2)))
+                .foregroundColor(.accentColor)
+                .opacity(minting ? 0.4 : 1)
+        }
+        .buttonStyle(.borderless)
+        .disabled(actions.busyHostId != nil)
+        .help(minting ? "Minting pairing link…" : help)
+        .contextMenu { t3MenuItems(host) }
     }
 
     // MARK: - Helpers

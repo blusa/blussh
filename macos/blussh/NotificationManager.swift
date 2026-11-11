@@ -25,4 +25,17 @@ final class NotificationManager {
             trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
+
+    /// Result of an action the user started (T3 pairing, linking). Not gated by the
+    /// down/up notifications setting: it's the only feedback once the popover closes.
+    /// Callers must never pass a pairing token in `title` or `body`.
+    func notifyAction(title: String, body: String, failed: Bool) {
+        guard authorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        if failed { content.sound = .default }
+        let request = UNNotificationRequest(identifier: "action-\(UUID().uuidString)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
 }

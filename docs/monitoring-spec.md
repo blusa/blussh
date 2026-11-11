@@ -157,8 +157,9 @@ off notifies once on the next run, after debounce).
 
 ## Host actions: T3 pairing and monitor
 
-> **Platform status:** implemented in the Omarchy port (`omarchy/blussh.py`).
-> **macOS parity is pending**: the Swift app has neither action yet.
+> **Platform status:** implemented in both versions: the Omarchy port
+> (`omarchy/blussh.py`, the reference) and the macOS app (`macos/blussh/T3.swift`
+> for the logic, `HostActions.swift` for clipboard, QR window and Terminal).
 
 ### T3 Code pairing link
 
@@ -201,19 +202,24 @@ Tailscale Serve at `https://<name>.<MagicDNSSuffix>/`. For each Tailscale host
   Keep **only** the `Pairing URL:` value (after stripping ANSI); if its host
   isn't the MagicDNS name (the no-`--tailscale` retry prints the loopback/LAN
   URL), rewrite it to `https://<magicdns>` keeping path and fragment. Copy it
-  to the clipboard marked sensitive (`wl-copy --sensitive`, which clipboard
-  history managers skip) and notify success/failure.
+  to the clipboard marked sensitive (Omarchy: `wl-copy --sensitive`; macOS:
+  `NSPasteboard` plus the `org.nspasteboard.ConcealedType` marker; clipboard
+  history managers skip both) and notify success/failure.
 - **QR variant** (to pair a phone): same flow, but instead of copying, show
   the Pairing URL as a QR code (black on white with a quiet zone regardless
   of theme, ECC level M, integer pixels per module so it scans). Render it in
   memory (Omarchy: `qrencode -t SVG --svg-path` fed on stdin; macOS:
   `CIQRCodeGenerator`), never to a file. Omarchy: right-click the T3 button,
-  the actions menu, or `q`.
+  the actions menu, or `q`. macOS: right-click the T3 button or the host row,
+  "Show T3 pairing QR"; the window drops the image when closed.
 - **Server-to-server link** (agents here work on the host): mint the same
   code, then run locally `t3 environment link https://<magicdns>
   --pairing-code <token> --access <level>` (levels: read-only,
   approval-required, auto-accept-edits, auto, full-access; full-access is the
-  default choice). Only offered when this machine runs T3 too. Note: T3's own
+  default choice). Only offered when the host is T3 and an SSH server and this
+  machine runs T3 too (macOS: host row context menu, "Link to T3 here").
+  Processes started by a GUI app lack Homebrew and `~/.local/bin` on PATH, so
+  the macOS app looks for the local `t3` there explicitly. Note: T3's own
   MCP link card does *not* accept a `t3 pair` code (it expects an
   `mcp-approval:` code and fails with "pairing code is unknown"); the CLI does.
 - **Token hygiene**: the pairing output is held in memory only. The token is
@@ -229,7 +235,9 @@ ssh -t <user@alias> "sh -lc 'if command -v btop …; then exec btop; elif comman
 ```
 
 `sh -lc` makes the choice independent of the remote login shell and picks up
-`~/.profile` PATH additions.
+`~/.profile` PATH additions. macOS opens it in Terminal (a temporary
+`.command` file, so no Apple Events permission is needed); Omarchy uses
+`xdg-terminal-exec`.
 
 ## Persistence
 
@@ -244,7 +252,7 @@ Keyed by stable host id — survives re-discovery and renames of transient data:
 State to persist: `enabled` (bool, default true), `isSSHServer` (auto-detect
 verdict / user override), `isT3` (T3 detection verdict / user override),
 `confirmed` (debounce state). macOS uses UserDefaults
-(`hostEnabled/v2`, `hostIsSSH/v2`, `hostConfirmedState/v2`); a Linux port
+(`hostEnabled/v2`, `hostIsSSH/v2`, `hostIsT3/v2`, `hostConfirmedState/v2`); a Linux port
 should use one JSON file, e.g. `~/.local/state/blussh/state.json`.
 
 Settings: per-source enable flags, refresh interval (5 s/10 s/1 m/5 m),

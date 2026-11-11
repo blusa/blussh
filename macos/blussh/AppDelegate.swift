@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var popover: NSPopover!
     var engine = MonitoringEngine()
+    var actions: HostActions!
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -27,10 +28,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(togglePopover(_:))
         }
 
+        actions = HostActions(notifier: engine.notifier)
+
         let popover = NSPopover()
         popover.contentSize = NSSize(width: 350, height: 350)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: StatusMenuView(engine: engine))
+        popover.contentViewController = NSHostingController(rootView: StatusMenuView(engine: engine, actions: actions))
         self.popover = popover
 
         engine.start()

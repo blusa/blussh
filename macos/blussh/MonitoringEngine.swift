@@ -6,8 +6,10 @@ final class MonitoringEngine: ObservableObject {
     @Published var sourceErrors: [SourceError] = []
     @Published var lastUpdated: Date? = nil
     @Published var globalStatus: GlobalStatus = .notInitialized
+    /// This machine (Tailscale Self): not monitored, only offered T3 pairing
+    @Published var selfHost: MonitoredHost? = nil
 
-    private let notifier = NotificationManager()
+    let notifier = NotificationManager()
     private var timer: Timer?
     private var isRefreshing = false
 
@@ -46,6 +48,16 @@ final class MonitoringEngine: ObservableObject {
         }
     }
 
+    func setIsT3(_ isT3: Bool, hostId: String) {
+        persist(isT3, hostId: hostId, key: "hostIsT3/v2")
+        if let index = hosts.firstIndex(where: { $0.id == hostId }) {
+            hosts[index].isT3 = isT3 && hosts[index].magicDNS != nil
+        }
+        if selfHost?.id == hostId {
+            selfHost?.isT3 = isT3 && selfHost?.magicDNS != nil
+        }
+    }
+
     // MARK: - Cycle
 
     private func runCycle() async {
@@ -68,6 +80,7 @@ final class MonitoringEngine: ObservableObject {
         }
 
         var discovered = merge(results.flatMap { $0.hosts })
+        var me = results.compactMap { $0.selfHost }.first
         let errors = results.compactMap { $0.error }
 
         // Apply persisted per-host overrides
@@ -79,6 +92,14 @@ final class MonitoringEngine: ObservableObject {
             if let override = sshDict[discovered[i].id] {
                 discovered[i].isSSHServer = override
             }
+        }
+        let t3Dict = defaults.dictionary(forKey: "hostIsT3/v2") as? [String: Bool] ?? [:]
+        for i in discovered.indices {
+            discovered[i].isT3 = discovered[i].magicDNS != nil && (t3Dict[discovered[i].id] ?? false)
+        }
+        if var m = me {
+            m.isT3 = m.magicDNS != nil && (t3Dict[m.id] ?? false)
+            me = m
         }
 
         // Auto-detect SSH: first time a VPN host is seen net-online, probe port 22 once
@@ -95,6 +116,33 @@ final class MonitoringEngine: ObservableObject {
             }
         }
         defaults.set(sshDict, forKey: "hostIsSSH/v2")
+
+        // T3 Code: like the SSH auto-detect, probe each host's Tailscale Serve URL once.
+        // Only a DNS failure (nil) is retried next cycle; any other answer is a persisted verdict.
+        var t3Verdicts: [String: Bool] = [:]
+        await withTaskGroup(of: (Int, Bool?).self) { group in
+            for (i, host) in (discovered + (me.map { [$0] } ?? [])).enumerated() {
+                guard let magic = host.magicDNS, !host.isPlaceholder, host.netOnline == true,
+                      t3Dict[host.id] == nil else { continue }
+                group.addTask { (i, await T3.probe(magicDNS: magic)) }
+            }
+            for await (i, verdict) in group {
+                guard let verdict = verdict else { continue }
+                if i < discovered.count {
+                    discovered[i].isT3 = verdict
+                    t3Verdicts[discovered[i].id] = verdict
+                } else if let id = me?.id {
+                    me?.isT3 = verdict
+                    t3Verdicts[id] = verdict
+                }
+            }
+        }
+        if !t3Verdicts.isEmpty {
+            // Re-read so an override the user made while probing wins
+            var stored = defaults.dictionary(forKey: "hostIsT3/v2") as? [String: Bool] ?? [:]
+            for (id, verdict) in t3Verdicts where stored[id] == nil { stored[id] = verdict }
+            defaults.set(stored, forKey: "hostIsT3/v2")
+        }
 
         // TCP checks, concurrently
         var checked = discovered
@@ -113,9 +161,11 @@ final class MonitoringEngine: ObservableObject {
 
         let transitions = applyDebounce(to: checked)
         let final = checked
+        let finalSelf = me
 
         await MainActor.run {
             self.hosts = final
+            self.selfHost = finalSelf
             self.sourceErrors = errors
             self.lastUpdated = Date()
             self.globalStatus = Self.computeGlobalStatus(final)
