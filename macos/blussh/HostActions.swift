@@ -52,6 +52,8 @@ final class HostActions: ObservableObject {
         guard let magic = startT3(host, progress: "Minting T3 pairing link for \(host.name)…") else { return }
         task = Task {
             let result = await T3.mintPairingURL(target: target(host), magicDNS: magic, label: T3.localShortHostname(), run: run)
+            // A cancel that arrived after the process finished still wins: nothing is copied or shown
+            if Task.isCancelled { finish(T3Error.cancelled.message); return }
             switch result {
             case .success(let url):
                 Self.copySensitive(url)
@@ -71,6 +73,8 @@ final class HostActions: ObservableObject {
         guard let magic = startT3(host, progress: "Minting T3 pairing code for \(host.name)…") else { return }
         task = Task {
             let result = await T3.mintPairingCode(target: target(host), magicDNS: magic, label: T3.localShortHostname(), run: run)
+            // A cancel that arrived after the process finished still wins: nothing is copied or shown
+            if Task.isCancelled { finish(T3Error.cancelled.message); return }
             switch result {
             case .success(let code):
                 Self.copySensitive(code)
@@ -88,6 +92,8 @@ final class HostActions: ObservableObject {
         guard let magic = startT3(host, progress: "Minting T3 pairing QR for \(host.name)…") else { return }
         task = Task {
             let result = await T3.mintPairingURL(target: target(host), magicDNS: magic, label: T3.localShortHostname(), run: run)
+            // A cancel that arrived after the process finished still wins: nothing is copied or shown
+            if Task.isCancelled { finish(T3Error.cancelled.message); return }
             switch result {
             case .success(let url):
                 guard let image = QRCode.image(for: url) else {
@@ -108,6 +114,8 @@ final class HostActions: ObservableObject {
     func link(_ host: MonitoredHost, access: String) {
         guard let magic = startT3(host, progress: "Linking \(host.name) to T3 here (\(access))…") else { return }
         task = Task {
+            // T3.link honours a cancel only up to the local link step: once that ran, the link
+            // exists, so its real result is reported even if a cancel arrived meanwhile
             let result = await T3.link(target: target(host), magicDNS: magic, label: T3.localShortHostname(),
                                        access: access, run: run)
             switch result {

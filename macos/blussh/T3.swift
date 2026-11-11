@@ -250,6 +250,8 @@ enum T3 {
         case .failure(let error): return .failure(error)
         case .success(let minted): url = minted
         }
+        // Cancelled after the mint finished: don't redeem the code
+        if Task.isCancelled { return .failure(.cancelled) }
         guard let code = pairingCode(fromURL: url) else {
             return .failure(T3Error("no pairing code in the link from \(target ?? "this machine")"))
         }
