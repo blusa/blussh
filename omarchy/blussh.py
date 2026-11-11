@@ -17,11 +17,14 @@ import json
 import os
 import re
 import shutil
+import shlex
 import socket
+import ssl
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "blussh")
@@ -61,6 +64,9 @@ def host(id, name, group, group_key, address, **extra):
         "placeholder": False,
         "aliases": [],
         "sshAlias": None,
+        "magicDNS": None,   # Tailscale MagicDNS name, where Tailscale Serve answers
+        "isT3": False,      # runs a T3 Code server published with Tailscale Serve
+        "isSelf": False,    # this machine (Tailscale Self): never monitored
     }
     h.update(extra)
     return h
@@ -82,7 +88,7 @@ class State:
                 self.data = json.load(f)
         except (OSError, ValueError):
             self.data = {}
-        for key in ("enabled", "isSSH", "confirmed", "streaks"):
+        for key in ("enabled", "isSSH", "isT3", "confirmed", "streaks"):
             self.data.setdefault(key, {})
         return self.data
 
@@ -179,31 +185,48 @@ def tailscale_hosts():
     if state and state != "Running":
         raise SourceError(f"Tailscale is {state.lower()}")
 
+    hosts, me = parse_tailscale_status(root)
+    if me:
+        hosts.append(me)  # run_cycle takes it back out: not monitored, only offered T3 pairing
+    return hosts
+
+
+def parse_tailscale_status(root):
+    """Peers of `tailscale status --json` as hosts, plus this machine (or None)."""
     tailnet = (root.get("CurrentTailnet") or {}).get("Name") or root.get("MagicDNSSuffix") or ""
+    suffix = (root.get("MagicDNSSuffix") or "").strip(".").lower()
     group = f"Tailscale · {tailnet}" if tailnet else "Tailscale"
-    hosts = []
-    for peer in (root.get("Peer") or {}).values():
+
+    def node(peer):
         host_name = peer.get("HostName")
         if not host_name:
-            continue
+            return None
         dns_name = (peer.get("DNSName") or "").strip(".") or None
         # Mullvad exit nodes would flood the list with hundreds of servers
         if dns_name and dns_name.endswith(".mullvad.ts.net"):
-            continue
+            return None
         ips = peer.get("TailscaleIPs") or []
         address = dns_name or next((ip for ip in ips if ":" not in ip), host_name)
         short = dns_name.split(".")[0] if dns_name else host_name
         aliases = [ip.lower() for ip in ips] + [short.lower(), host_name.lower()]
         if dns_name:
             aliases.append(dns_name.lower())
-        hosts.append(host(
+        # Tailscale Serve (where a T3 Code server is published) answers on the MagicDNS name
+        magic = dns_name.lower() if dns_name and suffix and dns_name.lower().endswith("." + suffix) else None
+        return host(
             f"ts:{short.lower()}", short, group, "1", address,
             netOnline=bool(peer.get("Online")),
             aliases=aliases,
             os=peer.get("OS") or "",
-        ))
+            magicDNS=magic,
+        )
+
+    hosts = [h for h in map(node, (root.get("Peer") or {}).values()) if h]
     hosts.sort(key=lambda h: h["name"].lower())
-    return hosts
+    me = node(root["Self"]) if root.get("Self") else None
+    if me:
+        me.update(isSelf=True, netOnline=True, enabled=False)
+    return hosts, me
 
 
 # MARK: - ZeroTier
@@ -344,6 +367,156 @@ def raise_partial(hosts, message):
     raise PartialResult(hosts, message)
 
 
+# MARK: - T3 Code
+
+T3_PROBE_TIMEOUT = 5
+T3_PAIR_TIMEOUT = 150   # npx may have to download t3 first
+T3_PAIR_TTL = "1h"
+# What the T3 Code web client serves at `/`. Every path answers with the same
+# SPA, so a route can't tell T3 from another web app; its HTML can.
+T3_MARKER = re.compile(r"<title>\s*T3 Code\b|[\"']t3code:", re.IGNORECASE)
+PAIRING_URL = re.compile(r"^\s*Pairing URL:\s*(\S+)", re.MULTILINE)
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# token=…, token%3D… (the url-encoded App link) and "Token: …"
+TOKEN = re.compile(r"(token\s*(?:=|%3D|:)\s*)[^\s&\"']+", re.IGNORECASE)
+
+
+def is_t3_page(status, content_type, body):
+    return status == 200 and "html" in (content_type or "").lower() and bool(T3_MARKER.search(body or ""))
+
+
+def probe_t3(magic_dns):
+    """Is a T3 Code server published with Tailscale Serve on this host?
+
+    Returns None only when the name doesn't resolve (a MagicDNS hiccup worth
+    retrying); a refused connection, TLS error or timeout is a "no".
+    """
+    req = urllib.request.Request(f"https://{magic_dns}/", headers={"User-Agent": "blussh"})
+    try:
+        with urllib.request.urlopen(req, timeout=T3_PROBE_TIMEOUT) as resp:
+            body = resp.read(65536).decode("utf-8", "replace")
+            return is_t3_page(resp.status, resp.headers.get("Content-Type"), body)
+    except urllib.error.HTTPError:
+        return False
+    except urllib.error.URLError as e:
+        return None if isinstance(e.reason, socket.gaierror) else False
+    except (OSError, ssl.SSLError, ValueError):
+        return False
+
+
+def redact(text):
+    return TOKEN.sub(r"\1<redacted>", text or "")
+
+
+def extract_pairing_url(output, magic_dns):
+    """The `Pairing URL:` line of `t3 pair`, pointed at the host's MagicDNS name.
+
+    Without --tailscale, t3 prints the server's own (loopback or LAN) URL;
+    clients reach it through Tailscale Serve on https://<magicdns>/ instead.
+    """
+    match = PAIRING_URL.search(ANSI.sub("", output or ""))
+    if not match:
+        return None
+    url = urllib.parse.urlsplit(match.group(1))
+    if not url.scheme.startswith("http") or not url.hostname:
+        return None
+    if magic_dns and url.hostname.lower() != magic_dns.lower():
+        url = url._replace(scheme="https", netloc=magic_dns)
+    return urllib.parse.urlunsplit(url)
+
+
+def t3_pair_script(label):
+    """Shell script that mints the pairing link on the T3 host.
+
+    Non-interactive ssh often lacks t3 on PATH, so look for it in the places
+    T3 Code installs it. Kept free of backslashes so it survives being quoted
+    for any remote login shell, fish included.
+    """
+    return f"""label={shlex.quote(label)}
+ttl={T3_PAIR_TTL}
+t3=
+if command -v t3 >/dev/null 2>&1; then
+  t3=t3
+elif [ -x "$HOME/.local/bin/t3" ]; then
+  t3="$HOME/.local/bin/t3"
+else
+  v=$(grep -o '"activeVersion"[^,}}]*' "$HOME/.t3/runtime/service-state.json" 2>/dev/null | cut -d'"' -f4)
+  if [ -n "$v" ] && [ -x "$HOME/.t3/runtime/versions/$v/t3" ]; then
+    t3="$HOME/.t3/runtime/versions/$v/t3"
+  fi
+fi
+pair() {{
+  if [ -n "$t3" ]; then
+    "$t3" pair "$@" </dev/null
+  elif command -v npx >/dev/null 2>&1; then
+    npx -y t3 pair "$@" </dev/null
+  else
+    echo "t3 not found on $(hostname)" >&2
+    return 127
+  fi
+}}
+pair --tailscale --ttl "$ttl" --label "$label"
+rc=$?
+if [ $rc -ne 0 ] && [ $rc -ne 127 ]; then
+  pair --ttl "$ttl" --label "$label"
+  rc=$?
+fi
+exit $rc
+"""
+
+
+def copy_sensitive(text):
+    # --sensitive keeps it out of clipboard history (Omarchy's honours the hint)
+    subprocess.run(["wl-copy", "--sensitive"], input=text, text=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=True)
+
+
+def t3_pair(target, magic_dns, label, run=subprocess.run, copy=copy_sensitive):
+    """Mint a T3 pairing link on `target` (ssh destination, None = this machine)
+    and copy it. The result never contains the token: callers print it."""
+    script = t3_pair_script(label)
+    if target:
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target, "bash -lc " + shlex.quote(script)]
+    else:
+        cmd = ["bash", "-lc", script]
+    where = target or "this machine"
+    try:
+        out = run(cmd, capture_output=True, text=True, timeout=T3_PAIR_TIMEOUT, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": f"t3 pair on {where} timed out"}
+    except OSError as e:
+        return {"ok": False, "message": f"can't run {cmd[0]}: {e.strerror or e}"}
+
+    url = extract_pairing_url(out.stdout, magic_dns)
+    if not url:
+        lines = [l for l in redact(ANSI.sub("", (out.stderr or "") + (out.stdout or ""))).splitlines() if l.strip()]
+        reason = lines[-1].strip()[:200] if lines else f"exit {out.returncode}"
+        return {"ok": False, "message": f"no pairing link from {where}: {reason}"}
+    try:
+        copy(url)
+    except (OSError, subprocess.SubprocessError):
+        return {"ok": False, "message": "couldn't copy the pairing link (wl-copy failed)"}
+    return {"ok": True, "message": f"Pairing link for {magic_dns or where} copied · expires in {T3_PAIR_TTL}"}
+
+
+# MARK: - Monitor
+
+# Best resource monitor the host has. Run through `sh -lc` so the user's
+# login shell (fish, zsh…) doesn't matter and ~/.profile PATH additions apply.
+MONITOR_SCRIPT = ("if command -v btop >/dev/null 2>&1; then exec btop; "
+                  "elif command -v htop >/dev/null 2>&1; then exec htop; "
+                  "else exec top; fi")
+
+
+def ssh_target(h):
+    target = h["sshAlias"] or h["address"]
+    return f"{h['user']}@{target}" if h["user"] else target
+
+
+def monitor_command(h):
+    return ["ssh", "-t", ssh_target(h), "sh -lc " + shlex.quote(MONITOR_SCRIPT)]
+
+
 # MARK: - Engine
 
 def merge(hosts):
@@ -373,8 +546,7 @@ def is_online(h):
 
 
 def ssh_command(h):
-    target = h["sshAlias"] or h["address"]
-    return f"ssh {h['user']}@{target}" if h["user"] else f"ssh {target}"
+    return f"ssh {ssh_target(h)}"
 
 
 def check_tcp(address, port):
@@ -412,14 +584,20 @@ def apply_debounce(hosts, state):
 
 def notify(h, up):
     body = f"{h['group']} · {h['address']}"
-    urgency = "normal" if up else "critical"
     if shutil.which("omarchy-notification-send"):
-        # Omarchy's own sender renders a theme-colored glyph instead of an emoji
         title = f"{h['name']} is back up" if up else f"{h['name']} went down"
-        cmd = ["omarchy-notification-send", "--app-name", "blussh", "-g", "󰒋" if up else "󰒎",
-               "-u", urgency, title, body]
     else:
         title = f"🟢 {h['name']} is back up" if up else f"🔴 {h['name']} went down"
+    send_notification(title, body, urgent=not up, glyph="󰒋" if up else "󰒎")
+
+
+def send_notification(title, body, urgent=False, glyph=None):
+    urgency = "critical" if urgent else "normal"
+    if shutil.which("omarchy-notification-send"):
+        # Omarchy's own sender renders a theme-colored glyph instead of an emoji
+        cmd = ["omarchy-notification-send", "--app-name", "blussh", *(["-g", glyph] if glyph else []),
+               "-u", urgency, title, body]
+    else:
         cmd = ["notify-send", "-a", "blussh", "-u", urgency, title, body]
     try:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -450,7 +628,8 @@ def run_cycle(sources, ssh_paths, notifications):
             except Exception as e:  # never let one source take the widget down
                 errors.append({"source": name, "message": f"{type(e).__name__}: {e}", "missing": False})
 
-        hosts = merge(discovered)
+        me = next((h for h in discovered if h["isSelf"]), None)
+        hosts = merge([h for h in discovered if not h["isSelf"]])
         state = read_state()
 
         # Apply persisted per-host overrides
@@ -460,11 +639,13 @@ def run_cycle(sources, ssh_paths, notifications):
             h["enabled"] = state["enabled"].get(h["id"], True)
             if h["id"] in state["isSSH"]:
                 h["isSSHServer"] = state["isSSH"][h["id"]]
+        for h in hosts + ([me] if me else []):
+            h["isT3"] = bool(h["magicDNS"]) and state["isT3"].get(h["id"], False)
 
         # Auto-detect SSH: first time a VPN host is seen net-online, probe its port once
         detect = [h for h in hosts if not h["placeholder"] and h["netOnline"] is True
                   and h["id"] not in state["isSSH"] and not h["isSSHServer"]]
-        verdicts = {}
+        verdicts, verdicts_t3 = {}, {}
         for h, responds in zip(detect, pool.map(lambda h: check_tcp(h["address"], h["port"]), detect)):
             h["isSSHServer"] = responds
             h["sshOnline"] = True if responds else None
@@ -475,15 +656,26 @@ def run_cycle(sources, ssh_paths, notifications):
                  and h["netOnline"] is not False and h["sshOnline"] is None]
         for h, online in zip(probe, pool.map(lambda h: check_tcp(h["address"], h["port"]), probe)):
             h["sshOnline"] = online
+
+        # T3 Code: like the SSH auto-detect, probe each host's Tailscale Serve URL once
+        t3_detect = [h for h in hosts + ([me] if me else []) if h["magicDNS"] and h["netOnline"] is True
+                     and h["id"] not in state["isT3"] and not h["placeholder"]]
+        for h, verdict in zip(t3_detect, pool.map(lambda h: probe_t3(h["magicDNS"]), t3_detect)):
+            if verdict is not None:
+                h["isT3"] = verdict
+                verdicts_t3[h["id"]] = verdict
     for h in hosts:
         if h["isSSHServer"] and h["netOnline"] is False:
             h["sshOnline"] = False
         h["online"] = is_online(h)
         h["sshCommand"] = ssh_command(h)
+        h["monitorCommand"] = monitor_command(h) if h["isSSHServer"] else None
 
     with State() as data:
         for host_id, verdict in verdicts.items():
             data["isSSH"].setdefault(host_id, verdict)  # a user override made meanwhile wins
+        for host_id, verdict in verdicts_t3.items():
+            data["isT3"].setdefault(host_id, verdict)
         transitions = apply_debounce(hosts, data)
 
     if notifications:
@@ -502,9 +694,11 @@ def run_cycle(sources, ssh_paths, notifications):
         status = "some-online"
 
     hosts.sort(key=lambda h: h["groupKey"])  # stable: keeps per-source order within groups
-    for h in hosts:
+    for h in hosts + ([me] if me else []):
         del h["aliases"]
     return {
+        # This machine, only so the panel can offer pairing with its own T3 server
+        "self": me,
         "hostname": socket.gethostname().split(".")[0].upper(),
         "status": status,
         "online": online,
@@ -534,7 +728,7 @@ def parse_bool(value):
 
 
 def cmd_set(args):
-    key = {"enabled": "enabled", "ssh": "isSSH"}[args.field]
+    key = {"enabled": "enabled", "ssh": "isSSH", "t3": "isT3"}[args.field]
     with State() as data:
         data[key][args.host_id] = args.value
         if key == "enabled" and args.value:
@@ -542,6 +736,22 @@ def cmd_set(args):
             data["confirmed"].pop(args.host_id, None)
             data["streaks"].pop(args.host_id, None)
     print("ok")
+
+
+def cmd_t3_pair(args):
+    """Used by the panel: copies the link itself, prints JSON without the token."""
+    label = args.label or socket.gethostname().split(".")[0]
+    result = t3_pair(args.target or None, args.dns, label)
+    if args.notify:
+        name = args.name or (args.dns or "").split(".")[0] or "this machine"
+        if result["ok"]:
+            send_notification(f"T3 pairing link for {name} copied", f"Paste it on the device to pair · expires in {T3_PAIR_TTL}",
+                              glyph="󰌹")
+        else:
+            send_notification(f"T3 pairing with {name} failed", result["message"], urgent=True, glyph="󰌺")
+    print(json.dumps(result))
+    if not result["ok"]:
+        sys.exit(1)
 
 
 def store_central_token(token):
@@ -658,7 +868,7 @@ def main():
 
     setp = sub.add_parser("set", help="persist a per-host override")
     setp.add_argument("host_id")
-    setp.add_argument("field", choices=["enabled", "ssh"])
+    setp.add_argument("field", choices=["enabled", "ssh", "t3"])
     setp.add_argument("value", type=parse_bool)
     setp.set_defaults(func=cmd_set)
 
@@ -670,6 +880,14 @@ def main():
     doc = sub.add_parser("doctor", help="print per-source diagnostics as JSON")
     doc.add_argument("--ssh-config", default="~/.ssh/config", help="comma-separated ssh config paths")
     doc.set_defaults(func=cmd_doctor)
+
+    pair = sub.add_parser("t3-pair", help="copy a T3 Code pairing link for a host (never prints the token)")
+    pair.add_argument("--target", help="ssh destination (user@alias); omit for this machine")
+    pair.add_argument("--dns", required=True, help="the host's Tailscale MagicDNS name")
+    pair.add_argument("--name", help="host name for the notification")
+    pair.add_argument("--label", help="connection label on the server (default: this machine's hostname)")
+    pair.add_argument("--notify", action="store_true", help="send a desktop notification with the result")
+    pair.set_defaults(func=cmd_t3_pair)
 
     zta = sub.add_parser("zerotier-authtoken", help="copy ZeroTier's local authtoken so blussh can read it")
     zta.set_defaults(func=cmd_zerotier_authtoken)

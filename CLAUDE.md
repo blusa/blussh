@@ -70,7 +70,14 @@ is a stdlib-only Python port of MonitoringEngine (state in
 `~/.local/state/blussh/state.json`); `Service.qml` runs `blussh.py check` on a
 timer and `Panel.qml` renders it using Omarchy's `qs.Ui` components, modeled on
 `/usr/share/omarchy/shell/plugins/panels/tailscale/`. Keep behavior changes in
-sync between the Swift engine and `blussh.py`. Tests:
+sync between the Swift engine and `blussh.py`.
+
+Omarchy-only for now (macOS parity pending, see the spec's "Host actions"):
+**T3 pairing** — Tailscale hosts (and `Self`) whose Serve URL serves T3 Code
+get `isT3` (one-time probe, persisted like `isSSH`, override `blussh set <id>
+t3`); `blussh t3-pair` runs `t3 pair` over ssh and copies only the Pairing
+URL with `wl-copy --sensitive`. Never print, log or persist the pairing token.
+**Monitor** — `monitorCommand` per SSH host: `ssh -t … btop|htop|top`. Tests:
 `python3 omarchy/test_blussh.py`. Dev install: `omarchy/install.sh --link`,
 then `omarchy restart shell` after QML edits (symlinked plugins don't
 hot-reload).

@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Tests for the ported monitoring logic: python3 omarchy/test_blussh.py"""
 
+import json
 import os
+import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -81,6 +86,203 @@ class DebounceTests(unittest.TestCase):
         self.assertEqual(self.reading(state, False), [])
         self.assertEqual(self.reading(state, True), [])
         self.assertEqual(self.reading(state, True), [("ts:a", True)])
+
+
+# Trimmed from what `https://<host>.<tailnet>.ts.net/` serves on a real T3 Code box
+T3_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <script>
+      const CUSTOM_THEMES_STORAGE_KEY = "t3code:themes:v1";
+    </script>
+    <title>T3 Code (Beta)</title>
+"""
+
+# A pairing token shaped like the real ones; it must never leave t3_pair()
+FAKE_TOKEN = "Q7XK2MWP9ZRB"
+PAIR_OUTPUT = f"""Pairing with BRAK (http://127.0.0.1:3773).
+
+█▀▀▀▀▀█ ▄▄▀ █▀▀▀▀▀█
+
+\x1b[1mPairing URL:\x1b[0m https://brak.tail.ts.net/pair#token={FAKE_TOKEN}
+App link: t3code://pair?pairingUrl=https%3A%2F%2Fbrak.tail.ts.net%2Fpair%23token%3D{FAKE_TOKEN}
+Token: {FAKE_TOKEN}
+Expires: 2026-11-11T11:40:00.000Z
+"""
+
+
+class T3DetectionTests(unittest.TestCase):
+    def test_t3_page(self):
+        self.assertTrue(blussh.is_t3_page(200, "text/html; charset=utf-8", T3_HTML))
+        # Older builds are titled "T3 Code (Alpha)"
+        self.assertTrue(blussh.is_t3_page(200, "text/html", "<title>T3 Code (Alpha)</title>"))
+
+    def test_other_web_apps_are_not_t3(self):
+        self.assertFalse(blussh.is_t3_page(200, "application/json", '{"status": "ok"}'))
+        self.assertFalse(blussh.is_t3_page(200, "text/html", "<title>Grafana</title>"))
+        self.assertFalse(blussh.is_t3_page(302, "text/html", "<title>302 Found</title>"))
+        self.assertFalse(blussh.is_t3_page(404, "text/html", T3_HTML))
+
+    def test_tailscale_hosts_get_their_magicdns_name(self):
+        status = {
+            "MagicDNSSuffix": "tail.ts.net",
+            "Self": {"HostName": "dexter", "DNSName": "dexter.tail.ts.net."},
+            "Peer": {
+                "a": {"HostName": "brak", "DNSName": "brak.tail.ts.net.", "TailscaleIPs": ["100.1.1.1"], "Online": True},
+                "b": {"HostName": "box", "DNSName": "", "TailscaleIPs": ["100.1.1.2"], "Online": True},
+            },
+        }
+        hosts, me = blussh.parse_tailscale_status(status)
+        self.assertEqual({h["name"]: h["magicDNS"] for h in hosts}, {"brak": "brak.tail.ts.net", "box": None})
+        self.assertEqual((me["id"], me["magicDNS"]), ("ts:dexter", "dexter.tail.ts.net"))
+
+
+class PairingTests(unittest.TestCase):
+    def test_extracts_only_the_pairing_url(self):
+        url = blussh.extract_pairing_url(PAIR_OUTPUT, "brak.tail.ts.net")
+        self.assertEqual(url, f"https://brak.tail.ts.net/pair#token={FAKE_TOKEN}")
+
+    def test_local_url_is_rewritten_to_magicdns(self):
+        out = f"Pairing URL: http://192.168.1.20:3773/pair#token={FAKE_TOKEN}\n"
+        self.assertEqual(blussh.extract_pairing_url(out, "brak.tail.ts.net"),
+                         f"https://brak.tail.ts.net/pair#token={FAKE_TOKEN}")
+
+    def test_no_url_in_output(self):
+        self.assertIsNone(blussh.extract_pairing_url("Error: server not running\n", "brak.tail.ts.net"))
+
+    def test_redact(self):
+        redacted = blussh.redact(PAIR_OUTPUT)
+        self.assertNotIn(FAKE_TOKEN, redacted)
+        self.assertIn("Pairing with BRAK", redacted)
+
+    def fake_run(self, stdout, returncode=0, stderr=""):
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+        return run, calls
+
+    def test_t3_pair_copies_url_and_reports_without_token(self):
+        run, calls = self.fake_run(PAIR_OUTPUT)
+        copied = []
+        result = blussh.t3_pair("brak", "brak.tail.ts.net", "dexter", run=run, copy=copied.append)
+        self.assertTrue(result["ok"])
+        self.assertEqual(copied, [f"https://brak.tail.ts.net/pair#token={FAKE_TOKEN}"])
+        self.assertNotIn(FAKE_TOKEN, json.dumps(result))
+        self.assertEqual(calls[0][:4], ["ssh", "-o", "BatchMode=yes", "-o"])
+        self.assertIn("brak", calls[0])
+
+    def test_t3_pair_failure_never_leaks_the_token(self):
+        # e.g. a stray token on stderr from a failing run
+        run, _ = self.fake_run("", 1, f"boom: token={FAKE_TOKEN}\nToken: {FAKE_TOKEN}\n")
+        copied = []
+        result = blussh.t3_pair("brak", "brak.tail.ts.net", "dexter", run=run, copy=copied.append)
+        self.assertFalse(result["ok"])
+        self.assertEqual(copied, [])
+        self.assertNotIn(FAKE_TOKEN, json.dumps(result))
+
+    def test_local_pair_runs_without_ssh(self):
+        run, calls = self.fake_run(PAIR_OUTPUT)
+        blussh.t3_pair(None, "brak.tail.ts.net", "dexter", run=run, copy=lambda _: None)
+        self.assertEqual(calls[0][:2], ["bash", "-lc"])
+
+
+def stub(directory, name, body):
+    path = os.path.join(directory, name)
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\n" + body + "\n")
+    os.chmod(path, 0o755)
+
+
+class RemoteScriptTests(unittest.TestCase):
+    """Runs the scripts blussh sends over ssh against stub binaries."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.home = os.path.join(self.tmp, "home")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.home)
+        os.makedirs(self.bin)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def run_script(self, script, path):
+        env = {"HOME": self.home, "PATH": path}
+        return subprocess.run(["/bin/bash", "-c", script], env=env, capture_output=True, text=True)
+
+    def t3_stub(self, directory, tag, fail_tailscale=False):
+        os.makedirs(directory, exist_ok=True)
+        check = 'case "$*" in *--tailscale*) echo "no tailscale" >&2; exit 1;; esac\n' if fail_tailscale else ""
+        stub(directory, "t3", check + f'echo "{tag} $*"')
+
+    def pair(self):
+        # /usr/bin:/bin for grep/cut only; the test environment has no t3 or npx there
+        return self.run_script(blussh.t3_pair_script("dexter"), f"{self.bin}:/usr/bin:/bin")
+
+    def test_script_survives_any_login_shell(self):
+        # fish treats backslashes inside single quotes as escapes
+        self.assertNotIn("\\", blussh.t3_pair_script("dexter"))
+
+    def test_prefers_t3_on_path(self):
+        self.t3_stub(self.bin, "path")
+        self.t3_stub(os.path.join(self.home, ".local/bin"), "local")
+        self.assertEqual(self.pair().stdout.strip(), "path pair --tailscale --ttl 1h --label dexter")
+
+    def test_then_local_bin(self):
+        self.t3_stub(os.path.join(self.home, ".local/bin"), "local")
+        self.t3_stub(os.path.join(self.home, ".t3/runtime/versions/0.1.8"), "runtime")
+        self.assertEqual(self.pair().stdout.strip(), "local pair --tailscale --ttl 1h --label dexter")
+
+    def test_then_runtime_active_version(self):
+        runtime = os.path.join(self.home, ".t3/runtime")
+        self.t3_stub(os.path.join(runtime, "versions/0.1.7"), "v0.1.7")
+        self.t3_stub(os.path.join(runtime, "versions/0.1.8"), "v0.1.8")
+        stub(self.bin, "npx", 'echo "npx $*"')
+        with open(os.path.join(runtime, "service-state.json"), "w") as f:
+            f.write('{\n  "protocol": 3,\n  "activeVersion": "0.1.7"\n}\n')
+        self.assertEqual(self.pair().stdout.strip(), "v0.1.7 pair --tailscale --ttl 1h --label dexter")
+
+    def test_then_npx(self):
+        stub(self.bin, "npx", 'echo "npx $*"')
+        self.assertEqual(self.pair().stdout.strip(), "npx -y t3 pair --tailscale --ttl 1h --label dexter")
+
+    def test_retries_without_tailscale(self):
+        self.t3_stub(self.bin, "path", fail_tailscale=True)
+        out = self.pair()
+        self.assertEqual(out.returncode, 0)
+        self.assertEqual(out.stdout.strip(), "path pair --ttl 1h --label dexter")
+
+    def test_t3_missing(self):
+        out = self.pair()
+        self.assertEqual(out.returncode, 127)
+        self.assertIn("t3 not found", out.stderr)
+
+    def test_label_is_quoted(self):
+        self.t3_stub(self.bin, "path")
+        out = self.run_script(blussh.t3_pair_script("it's me; rm -rf ~"), f"{self.bin}:/usr/bin:/bin")
+        self.assertEqual(out.stdout.strip(), "path pair --tailscale --ttl 1h --label it's me; rm -rf ~")
+
+    def monitor(self, *available):
+        for name in available:
+            stub(self.bin, name, f"echo {name}")
+        return self.run_script(blussh.MONITOR_SCRIPT, self.bin).stdout.strip()
+
+    def test_monitor_prefers_btop_then_htop_then_top(self):
+        self.assertEqual(self.monitor("btop", "htop", "top"), "btop")
+        os.remove(os.path.join(self.bin, "btop"))
+        self.assertEqual(self.monitor(), "htop")
+        os.remove(os.path.join(self.bin, "htop"))
+        self.assertEqual(self.monitor(), "top")
+
+    def test_monitor_command_runs_over_a_tty(self):
+        h = blussh.host("ts:brak", "brak", "Tailscale", "1", "brak.tail.ts.net", user="pablo", sshAlias="brak")
+        cmd = blussh.monitor_command(h)
+        self.assertEqual(cmd[:3], ["ssh", "-t", "pablo@brak"])
+        self.assertEqual(shlex.split(cmd[3]), ["sh", "-lc", blussh.MONITOR_SCRIPT])
 
 
 if __name__ == "__main__":

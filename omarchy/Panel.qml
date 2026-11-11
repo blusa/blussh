@@ -291,6 +291,8 @@ Panel {
         else if (t === "o" || t === "O") { blussh.openSsh(host); root.close() }
         else if (t === "m" || t === "M") blussh.setEnabled(host, !host.enabled)
         else if (t === "s" || t === "S") blussh.setIsSSHServer(host, !host.isSSHServer)
+        else if (t === "p" || t === "P") blussh.t3Pair(host)
+        else if (t === "t" || t === "T") { if (host.monitorCommand) { blussh.openMonitor(host); root.close() } }
       }
 
       Flickable {
@@ -328,6 +330,11 @@ Panel {
             trailingControl: Component {
               Row {
                 spacing: Style.space(2)
+                T3Button {
+                  visible: root.view === "hosts" && blussh.me !== null && blussh.me.isT3 === true
+                  host: blussh.me
+                  tooltipText: "Copy a T3 pairing link for this machine"
+                }
                 PanelActionButton {
                   visible: root.view === "hosts" && root.hiddenCount > 0
                   iconText: root.hideDisabled ? "󰈉" : "󰈈"
@@ -451,9 +458,13 @@ Panel {
           if (!host) return []
           var list = [{ kind: "copy", label: "Copy " + host.sshCommand, glyph: "󰆏" }]
           if (host.isSSHServer) list.push({ kind: "open", label: "Open ssh session", glyph: "󰆍" })
+          if (host.isT3) list.push({ kind: "t3", label: "Copy T3 pairing link", glyph: "󰌹" })
+          if (host.monitorCommand) list.push({ kind: "top", label: "Monitor (btop · htop · top)", glyph: "󰓅" })
           list.push({ kind: "monitor", label: host.enabled ? "Hide host (stops monitoring)" : "Show and monitor again", glyph: host.enabled ? "󰈉" : "󰈈" })
           if (host.netOnline !== null && host.netOnline !== undefined)
             list.push({ kind: "ssh", label: host.isSSHServer ? "Don't check SSH port" : "Check SSH port", glyph: "󰣀" })
+          if (host.magicDNS)
+            list.push({ kind: "t3toggle", label: host.isT3 ? "Hide T3 pairing" : "Show T3 pairing", glyph: "󰌺" })
           return list
         }
 
@@ -471,6 +482,9 @@ Panel {
           else if (kind === "open") { blussh.openSsh(h); root.close() }
           else if (kind === "monitor") blussh.setEnabled(h, !h.enabled)
           else if (kind === "ssh") blussh.setIsSSHServer(h, !h.isSSHServer)
+          else if (kind === "t3") blussh.t3Pair(h)
+          else if (kind === "top") { blussh.openMonitor(h); root.close() }
+          else if (kind === "t3toggle") blussh.setIsT3(h, !h.isT3)
         }
 
         onOpenedChanged: {
@@ -645,6 +659,12 @@ Panel {
         onClicked: { blussh.setZeroTierToken(); root.close() }
       }
 
+      T3Button {
+        visible: !hostRow.placeholder && hostRow.host.isT3 === true
+        host: hostRow.host
+        Layout.alignment: Qt.AlignVCenter
+      }
+
       PanelActionButton {
         visible: !hostRow.placeholder && hostRow.host.isSSHServer
         iconText: "󰆍"
@@ -665,5 +685,20 @@ Panel {
         onClicked: root.openActionMenu(hostRow.host)
       }
     }
+  }
+
+  // "T3" set in the panel font, like the other row actions: copies a pairing
+  // link for the host's T3 Code server. Dims while a link is being minted.
+  component T3Button: PanelActionButton {
+    property var host: null
+    readonly property bool minting: blussh.pairing && host !== null && blussh.pairingHostId === host.id
+    iconText: "T3"
+    fontSize: Style.font.bodySmall
+    tooltipText: minting ? "Minting pairing link…" : "Copy T3 pairing link (p)"
+    foreground: root.foreground
+    fontFamily: root.fontFamily
+    enabled: !blussh.pairing
+    opacity: minting ? 0.45 : 1.0
+    onClicked: blussh.t3Pair(host)
   }
 }

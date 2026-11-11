@@ -155,6 +155,66 @@ Notify on each transition (only for enabled hosts):
 `confirmed` is persisted across restarts (so a change while the monitor was
 off notifies once on the next run, after debounce).
 
+## Host actions: T3 pairing and monitor
+
+> **Platform status:** implemented in the Omarchy port (`omarchy/blussh.py`).
+> **macOS parity is pending**: the Swift app has neither action yet.
+
+### T3 Code pairing link
+
+T3 Code servers are published on the tailnet with
+Tailscale Serve at `https://<name>.<MagicDNSSuffix>/`. For each Tailscale host
+(and for `Self`, which is otherwise never monitored) with a MagicDNS name —
+`DNSName` ending in the status' `MagicDNSSuffix`, never hard-coded:
+
+- **Detection**: `GET https://<magicdns>/` (5 s timeout). It is T3 when the
+  answer is `200`, `text/html`, and the body has `<title>T3 Code` (Beta and
+  older Alpha builds) or one of the client's `t3code:` storage keys. The SPA
+  answers every path with the same page, so a route alone (`/pair`) proves
+  nothing. Verified against brak/dexter/ti-sense (T3), noctua (200 JSON),
+  neurus (302 to another app), zorak (TLS alert), hermes (connection refused).
+- **Caching**: like SSH auto-detect, probe once the first time the host is
+  seen `netOnline == true`, persist the verdict (`isT3`), user can override.
+  Refused connections, TLS errors and timeouts are a persisted "no"; only a
+  DNS resolution failure is retried next cycle.
+- **Action**: over ssh (`ssh -o BatchMode=yes <user@alias>`, the same target
+  as the copied ssh command; locally for `Self`) run inside `bash -lc`:
+
+  ```
+  t3 pair --tailscale --ttl 1h --label <local short hostname>
+  ```
+
+  Non-interactive ssh often lacks `t3` on PATH, so the binary is the first of:
+  `t3` on PATH; `~/.local/bin/t3`; `~/.t3/runtime/versions/<activeVersion>/t3`
+  with `activeVersion` from `~/.t3/runtime/service-state.json`; `npx -y t3`.
+  If `--tailscale` fails, retry without it. Output includes:
+
+  ```
+  Pairing URL: https://brak.<suffix>/pair#token=<TOKEN>
+  App link: t3code://pair?pairingUrl=…%23token%3D<TOKEN>
+  Token: <TOKEN>
+  ```
+
+  Keep **only** the `Pairing URL:` value (after stripping ANSI); if its host
+  isn't the MagicDNS name (the no-`--tailscale` retry prints the loopback/LAN
+  URL), rewrite it to `https://<magicdns>` keeping path and fragment. Copy it
+  to the clipboard marked sensitive (`wl-copy --sensitive`, which clipboard
+  history managers skip) and notify success/failure.
+- **Token hygiene**: the pairing output is held in memory only. The token is
+  never printed, logged, persisted, or put in a notification; error messages
+  are built from redacted output (`token=`, `token%3D`, `Token:`).
+
+### Monitor
+
+For SSH hosts, open a terminal running
+
+```
+ssh -t <user@alias> "sh -lc 'if command -v btop …; then exec btop; elif command -v htop …; then exec htop; else exec top; fi'"
+```
+
+`sh -lc` makes the choice independent of the remote login shell and picks up
+`~/.profile` PATH additions.
+
 ## Persistence
 
 Keyed by stable host id — survives re-discovery and renames of transient data:
@@ -166,7 +226,8 @@ Keyed by stable host id — survives re-discovery and renames of transient data:
 | `zt:<nwid>:<nodeId>` | `zt:60ee7c034ac5ef42:f2433eade5` |
 
 State to persist: `enabled` (bool, default true), `isSSHServer` (auto-detect
-verdict / user override), `confirmed` (debounce state). macOS uses UserDefaults
+verdict / user override), `isT3` (T3 detection verdict / user override),
+`confirmed` (debounce state). macOS uses UserDefaults
 (`hostEnabled/v2`, `hostIsSSH/v2`, `hostConfirmedState/v2`); a Linux port
 should use one JSON file, e.g. `~/.local/state/blussh/state.json`.
 

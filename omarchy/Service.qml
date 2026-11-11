@@ -21,7 +21,10 @@ Item {
   property double updated: 0
   property string actionStatus: ""
   property string lastError: ""
+  property var me: null             // this machine (Tailscale Self), only for T3 pairing
+  property string pairingHostId: ""
   readonly property bool busy: checkProcess.running
+  readonly property bool pairing: pairProcess.running
 
   readonly property string scriptPath: decodeURIComponent(String(Qt.resolvedUrl("blussh.py")).replace(/^file:\/\//, ""))
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 5, 3600)
@@ -93,6 +96,7 @@ Item {
     _overrides = overrides
     hosts = next
     errors = data.errors || []
+    me = data.self || null
     hostname = String(data.hostname || "")
     status = String(data.status || "none")
     online = data.online || 0
@@ -123,6 +127,33 @@ Item {
   function openSsh(host) {
     if (!host || host.placeholder) return
     Quickshell.execDetached(["setsid", "uwsm-app", "--", "xdg-terminal-exec", "ssh", sshTarget(host)])
+  }
+
+  // Opens the host's best resource monitor (btop, else htop, else top) over ssh
+  function openMonitor(host) {
+    if (!host || host.placeholder || !host.monitorCommand) return
+    Quickshell.execDetached(["setsid", "uwsm-app", "--", "xdg-terminal-exec"].concat(host.monitorCommand))
+  }
+
+  // The backend mints the link over ssh and copies it itself: the pairing
+  // token never reaches QML, the shell's logs or a saved stderr.
+  function t3Pair(host) {
+    if (!host || host.placeholder || !host.isT3 || !host.magicDNS) return
+    if (pairProcess.running) { flash("Already minting a T3 pairing link…"); return }
+    var local = host.isSelf === true
+    if (!local && !host.isSSHServer) { flash("T3 pairing needs SSH access to " + host.name); return }
+    var command = ["python3", scriptPath, "t3-pair", "--notify", "--dns", host.magicDNS, "--name", host.name]
+    if (!local) command.push("--target", sshTarget(host))
+    pairingHostId = host.id
+    actionStatusTimer.stop()
+    actionStatus = "Minting T3 pairing link for " + host.name + "…"
+    pairProcess.command = command
+    pairProcess.running = true
+  }
+
+  function setIsT3(host, isT3) {
+    setOverride(host, "isT3", "t3", isT3)
+    flash((isT3 ? "T3 pairing on for " : "T3 pairing off for ") + host.name)
   }
 
   function setOverride(host, field, cliField, value) {
@@ -191,6 +222,19 @@ Item {
     id: actionStatusTimer
     interval: 2200
     onTriggered: root.actionStatus = ""
+  }
+
+  Process {
+    id: pairProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: pairStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      var message = ""
+      try { message = JSON.parse(String(pairStdout.text || "").trim()).message } catch (e) {}
+      root.pairingHostId = ""
+      root.flash(message || ("T3 pairing failed (exit " + exitCode + ")"))
+    }
   }
 
   Process {
